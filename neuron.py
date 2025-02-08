@@ -1,14 +1,48 @@
 import pygame
 import numpy as np
 import scipy
-import time
-import random
+import time, random, glob, sys
 import h5py # Cross-platform and open
-import glob
 
-WIDTH, HEIGHT = 32, 32
-PIXEL_SIZE = 32  # How big each pixel will appear on the screen
-SCREEN_SIZE = WIDTH * PIXEL_SIZE, HEIGHT * PIXEL_SIZE
+pygame.init()
+pygame.key.set_repeat(1000,100)
+displays = pygame.display.get_desktop_sizes()
+display = 0
+if len(sys.argv) > 1:
+    display = int(sys.argv[1])
+(screen_width, screen_height) = displays[display]
+screen = pygame.display.set_mode((screen_width, screen_height), display=display, flags=pygame.FULLSCREEN | pygame.SCALED)
+
+WIDTH = HEIGHT = 32 # Number of neurons in each dimension
+surface_width_pixels = surface_height_pixels = min(screen_width, screen_height) # Rendering area is a square using lhs of screen
+pixel_scale = surface_width_pixels / WIDTH
+
+class Console: # Maintain a text console
+    def __init__(self):
+        font_name = pygame.font.match_font("couriernew")
+        self.char_width_pixels = 10
+        self.char_height_pixels = 16
+        self.font = pygame.font.Font(font_name, 16) 
+        self.chars_wide = int((screen_width - surface_width_pixels) / self.char_width_pixels)
+        self.chars_high = int(screen_height / self.char_height_pixels) 
+        self.strings = ["" for i in range(self.chars_high)] # A string for every row
+
+    def add_char(self, c):
+        if len(self.strings[-1]) >= self.chars_wide:
+            self.strings = self.strings[1:]
+            self.strings.append("")
+        self.strings[-1] += c
+
+    def add_line(self, s):
+        while s != "": # Wrap string if necessary
+            self.strings = self.strings[1:]
+            self.strings.append(s[0:self.chars_wide])
+            s = s[self.chars_wide:]
+
+    def render(self, screen):
+        for i in range(len(self.strings)):
+            textpixels = self.font.render(self.strings[i],True,(255,255,255))
+            screen.blit(textpixels, (surface_width_pixels, i * self.char_height_pixels))
 
 class globals_class:
     suffix = ".h5"
@@ -55,10 +89,8 @@ globals.set("MIN_STRIKE_IGNITION", 0.05) # Can only be lit, if at least this muc
 globals.set("ENERGY_SUPPLY_PER_TICK", 0.005)
 globals.set("ENERGY_CONSUMED_PER_TICK", 0.03) # When lit
 
-pygame.init()
 
 # Create the screen
-screen = pygame.display.set_mode(SCREEN_SIZE)
 pygame.display.set_caption('Neuron 2025')
 surface = pygame.Surface((WIDTH, HEIGHT))
 
@@ -69,7 +101,7 @@ energy_array = np.zeros((WIDTH, HEIGHT), dtype=float) # How much energy is avail
 lit_array = np.zeros((WIDTH, HEIGHT), dtype=bool) # Is this pixel lit (burning energy)?
 ignition_array = np.zeros((WIDTH, HEIGHT), dtype=float) # This is a temporary calculation, not a state variable - just made global so we can display it
 
-def update_display():
+def update_display(screen, console):
     white_int = 1 + 256 + 256*256
     if show_ignition:
         i = np.clip((ignition_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
@@ -83,18 +115,15 @@ def update_display():
         # energy as blue, lit as green, active as red
         pygame.surfarray.blit_array(surface, e + 255 * 256 * lit_array + 255 * 256 * 256 * active_array )
 
-    for n in neurons:
-        v = min(255, 64+int(n.value * 192))
-        surface.set_at( n.xy, (0,v,0))
+    pixels = pygame.transform.scale(surface, (surface_width_pixels, surface_height_pixels))
+    for x in range(WIDTH+1):
+        pygame.draw.line(pixels, (32,32,32), (x*pixel_scale,0), (x*pixel_scale,surface_height_pixels), 1)
+    for y in range(HEIGHT+1):
+        pygame.draw.line(pixels, (32,32,32), (0, y*pixel_scale), (surface_width_pixels, y*pixel_scale), 1)
 
-    pixels = pygame.transform.scale(surface, SCREEN_SIZE)
-    for x in range(WIDTH):
-        pygame.draw.line(pixels, (32,32,32), (x*PIXEL_SIZE,0), (x*PIXEL_SIZE,SCREEN_SIZE[1]), 1)
-    for y in range(HEIGHT):
-        pygame.draw.line(pixels, (32,32,32), (0, y*PIXEL_SIZE), (SCREEN_SIZE[0], y*PIXEL_SIZE), 1)
-
+    screen.fill((0,0,0))
     screen.blit(pixels, (0, 0))
-        
+    console.render(screen)
     pygame.display.flip()
 
 def tick_matrix():
@@ -106,41 +135,21 @@ def tick_matrix():
     ignition_array = scipy.ndimage.gaussian_filter(lit_array.astype(float), sigma=1.0, mode="constant") # "mode=constant" makes it treat pixels off the edge of the screen as having no energy (default is to reflect!)
     lit_array[ (ignition_array > globals.get("MIN_STRIKE_IGNITION")) & (energy_array >= globals.get("MIN_LIT_ENERGY")) & (active_array==True)] = 1 # Light anything sufficiently-close to a source of ignition, and with enough energy available
 
-class Neuron:
-    def __init__(self, xy):
-        self.xy = xy
-        self.value = 0
+def set_active_array(xy, state):
+    active_array[xy] = state
+    energy_array[xy] = 0
+    lit_array[xy] = False
 
-    def tick(self):
-        if self.value > 0:
-            self.value -= 0.1
-
-    def trigger(self):
-        self.value = 1.0
-
-neurons = [Neuron] * 0
-
-def add_neuron(xy):
-    neurons.append(Neuron(xy))
-
-def find_neuron(xy):
-    for n in neurons:
-        if n.xy == xy:
-            return(n)
-    return None
-
-def trigger_neuron(xy):
-    n = find_neuron(xy)
-    if n:
-        n.trigger()
-        return n
-    return None
-        
+console = Console()
+console.add_line("Hello everyone")
+console.add_line("This is groovy")
+console.add_line("Let's do some shit")
 
 # Main loop
 running = True
 paused = False
 show_ignition = False
+dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
 while running:
     t1 = time.time()
     do_step = False
@@ -148,93 +157,85 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-            grid_x, grid_y = mouse_x // PIXEL_SIZE, mouse_y // PIXEL_SIZE
-
-            if event.button==1:
-                active_array[grid_x, grid_y] ^= True # XOR with True, i.e. invert
-                energy_array[grid_x, grid_y] = 0
-                lit_array[grid_x, grid_y] = False
-                #if trigger_neuron( (grid_x, grid_y) ):
-                #   pass
-                #else:
-                #    energy_array[grid_x, grid_y] = 1.0 - energy_array[grid_x, grid_y]
-            else:
-                if active_array[grid_x, grid_y] & (energy_array[grid_x, grid_y] >= globals.get("MIN_LIT_ENERGY")):
-                    lit_array[grid_x, grid_y] = 1
-                # add_neuron( (grid_x, grid_y) )
+            grid_x, grid_y = int(pygame.mouse.get_pos()[0] / pixel_scale), int(pygame.mouse.get_pos()[1] / pixel_scale)
+            if grid_x < WIDTH:
+                if event.button==1:
+                    set_active_array( (grid_x,grid_y), not active_array[grid_x, grid_y])
+                    dragging_state = active_array[grid_x, grid_y]
+                else:
+                    if active_array[grid_x, grid_y] & (energy_array[grid_x, grid_y] >= globals.get("MIN_LIT_ENERGY")):
+                        lit_array[grid_x, grid_y] = 1
+        elif event.type == pygame.MOUSEMOTION:
+            if event.buttons[0]:
+                grid_x, grid_y = int(pygame.mouse.get_pos()[0] / pixel_scale), int(pygame.mouse.get_pos()[1] / pixel_scale)
+                if grid_x < WIDTH:
+                    set_active_array( (grid_x,grid_y), dragging_state)
         elif event.type == pygame.KEYDOWN:
-            print(event.key)
-            if event.mod == 64 and event.key == ord('c'): # ^C
+            if (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
                 running = False
-            if event.key == 27: # ESC
+            elif event.key == 27: # ESC
                 running = False
-            if event.key == ord('p'):
+            elif event.key == ord('p'):
                 paused = not paused
-                print("Paused=",paused)
-            if event.key == ord('i'):
+            elif event.key == ord(' '):
+                paused = True
+                do_step = True
+            elif event.key == ord('i'):
                 show_ignition = not show_ignition
                 print("Show Ignition=",show_ignition)
-            if event.key == ord(' '):
-                print("Step")
-                do_step = True
-            if event.key == ord('r'):
+            elif event.key >= ord('0') and event.key <= ord('9'):
+                console.add_char(chr(event.key))
+            elif event.key == ord('r'):
                 for i in range(int(WIDTH*HEIGHT/10)): # Ignite a 1/10th of random pixels
                     lit_array[random.randrange(WIDTH), random.randrange(HEIGHT)] = 1
-            if event.key == ord('s'):
+            elif event.key == ord('s'):
                 globals.list_files()
                 filename = input("Enter filename to save: ")
                 if filename:
                     globals.save(filename)
-            if event.key == ord('l'):
+            elif event.key == ord('l'):
                 globals.list_files()
                 filename = input("Enter filename to load: ")
                 if filename:
                     globals.load(filename)
-            if event.key == ord('v'):
+            elif event.key == ord('v'):
                 globals.list_vars()
-            if event.key == pygame.K_UP:
+            elif event.key == pygame.K_UP:
                 globals.selected -= 1
                 globals.selected = globals.selected % len(globals.vars)
                 globals.list_vars()
-            if event.key == pygame.K_DOWN:
+            elif event.key == pygame.K_DOWN:
                 globals.selected += 1
                 globals.selected = globals.selected % len(globals.vars)
                 globals.list_vars()
-            if event.key == pygame.K_LEFT:
+            elif event.key == pygame.K_LEFT:
                 globals.set_selected(globals.get_selected() / 1.05)
                 globals.list_vars()
-            if event.key == pygame.K_RIGHT:
+            elif event.key == pygame.K_RIGHT:
                 globals.set_selected(globals.get_selected() * 1.05)
                 globals.list_vars()
-            if event.key == ord('f'):   # Fill entire array
+            elif event.key == ord('f'):   # Fill entire array
                 active_array[:] = True
                 energy_array[:] = 0
                 lit_array[:] = False
-            if event.key == ord('c'):   # Clear entire array
+            elif event.key == ord('c'):   # Clear entire array
                 if(input("clear array - sure?").strip().lower().startswith('y')):
                     active_array[:] = False
                     energy_array[:] = 0
                     lit_array[:] = False
-            if event.key == ord('z'):   # Zero (deactivate) entire array
+            elif event.key == ord('z'):   # Zero (deactivate) entire array
                 energy_array[:] = 0
                 lit_array[:] = False
         else:
             pass
-            # print(event)
 
     # Update the display with the new pixel array
-    update_display()
+    update_display(screen, console)
 
     t2 = time.time()
 
     if (not paused) or do_step:
-        for n in neurons:
-            n.tick()
         tick_matrix()
-
-    # print(energy_array[0,0], lit_array[0,0], ignition_array[0,0])
-    # print(1/(t2-t1),"fps to update display,", 1/(time.time()-t2),"fps to update matrix")
 
 # Quit pygame
 pygame.quit()

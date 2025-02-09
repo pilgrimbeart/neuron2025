@@ -19,6 +19,9 @@ class Cells: # Maintain a grid of cells of excitable media
         self.lit_array =      np.zeros(self.grid_size, dtype=bool)  # Is this pixel lit (burning energy)?
         self.ignition_array = np.zeros(self.grid_size, dtype=float) # This is a temporary calculation, not a state variable - just made global so we can display it
         self.reset(False)
+        # Probes
+        self.probe_font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
+        self.probes = []
 
     def reset(self, state):
         self.active_array[:] = state
@@ -28,7 +31,8 @@ class Cells: # Maintain a grid of cells of excitable media
         self.energy_array[:] = 0
         self.lit_array[:] = False
 
-    def render(self):
+    def render(self, show_probes):
+        # Cells
         white_int = 1 + 256 + 256*256
         if show_ignition:
             i = np.clip((self.ignition_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
@@ -43,12 +47,19 @@ class Cells: # Maintain a grid of cells of excitable media
             pygame.surfarray.blit_array(self.surface, e + 255 * 256 * self.lit_array + 255 * 256 * 256 * self.active_array )
 
         pixels = pygame.transform.scale(self.surface, self.size)
-        for x in range(self.grid_size[0]+1):
-            pygame.draw.line(pixels, (32,32,32), (x*self.pixel_scale,0), (x*self.pixel_scale,self.size[1]), 1)
-        for y in range(self.grid_size[1]+1):
-            pygame.draw.line(pixels, (32,32,32), (0, y*self.pixel_scale), (self.size[0], y*self.pixel_scale), 1)
-
         screen.blit(pixels, self.xy)
+
+        # Grid
+        for x in range(self.grid_size[0]+1):
+            pygame.draw.line(self.screen, (32,32,32), (self.xy[0]+x*self.pixel_scale,self.xy[1]), (self.xy[0]+x*self.pixel_scale,self.xy[1]+self.size[1]), 1)
+        for y in range(self.grid_size[1]+1):
+            pygame.draw.line(self.screen, (32,32,32), (self.xy[0], self.xy[1]+y*self.pixel_scale), (self.xy[0]+self.size[0], self.xy[1]+y*self.pixel_scale), 1)
+
+        # Probes
+        if show_probes:
+            for i in range(len(self.probes)):
+                textpixels = self.probe_font.render(str(i),True,(255,255,255))
+                self.screen.blit(textpixels, (self.xy[0] + self.probes[i][0] * self.pixel_scale, self.xy[1] + self.probes[i][1] * self.pixel_scale) )
 
     def find_cell(self, screen_xy):
         cell_x, cell_y = int(screen_xy[0] / self.pixel_scale), int(screen_xy[1] / self.pixel_scale)
@@ -74,7 +85,33 @@ class Cells: # Maintain a grid of cells of excitable media
         self.ignition_array = scipy.ndimage.gaussian_filter(self.lit_array.astype(float), sigma=1.0, mode="constant") # "mode=constant" makes it treat pixels off the edge of the screen as having no energy (default is to reflect!)
         self.lit_array[ (self.ignition_array > globals.get("MIN_STRIKE_IGNITION")) & (self.energy_array >= globals.get("MIN_LIT_ENERGY")) & (self.active_array==True)] = 1 # Light anything sufficiently-close to a source of ignition, and with enough energy available
 
+    def add_probe(self, cell_xy):
+        self.probes.append(cell_xy)
 
+class Chart: # Maintain a chart
+    def __init__(self, screen, xy, size):
+        self.screen = screen
+        self.xy = xy
+        self.size = size
+        self.trace_n_values = 50
+        self.scale = (size[0] / self.trace_n_values, self.size[1]) # Assumes that input range is 0..1
+        self.values = np.zeros(self.trace_n_values)
+        self.values[:] = np.nan
+        self.write_index = 0
+
+    def render(self):
+        pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0)
+        for v in range(len(self.values)-1):
+            if self.values[v+1] != np.nan:
+                pygame.draw.line(self.screen, (255,255,255), (self.xy[0]+v*self.scale[0],self.xy[1]+self.size[1]-self.values[v]*self.scale[1]), (self.xy[0]+(v+1)*self.scale[0],self.xy[1]+self.size[1]-self.values[v+1]*self.scale[1]), 1)
+
+    def update(self, cells):
+        if self.write_index < self.trace_n_values:
+            for probe in cells.probes:
+                self.values[self.write_index] = cells.energy_array[probe]
+            self.write_index += 1
+        else:
+            self.write_index = 0
 
 class Console: # Maintain a text console
     def __init__(self,screen, xy,size):
@@ -87,6 +124,7 @@ class Console: # Maintain a text console
         self.chars_wide = int(size[0] / self.char_width_pixels)
         self.chars_high = int(size[1] / self.char_height_pixels) 
         self.strings = ["" for i in range(self.chars_high)] # A string for every row
+        self.fps_smoothing = 0
 
     def add_char(self, c):
         if len(self.strings[-1]) >= self.chars_wide:
@@ -94,28 +132,26 @@ class Console: # Maintain a text console
             self.strings.append("")
         self.strings[-1] += c
 
-    def add_line(self, s):
+    def write(self, s): # Called by stdout
+        s = s.strip()
         while s != "": # Wrap string if necessary
             self.strings = self.strings[1:]
             self.strings.append(s[0:self.chars_wide])
             s = s[self.chars_wide:]
 
-    def render(self):
+    def flush(self): # Necessary method to support stdout redirection
+        pass
+
+    def render(self, s_per_frame):
         for i in range(len(self.strings)):
             textpixels = self.font.render(self.strings[i],True,(255,255,255))
             self.screen.blit(textpixels, (self.xy[0], self.xy[1] + i * self.char_height_pixels))
+        self.fps_smoothing = self.fps_smoothing * 0.99 + s_per_frame * 0.01 # Otherwise it jitters so much you can't read it
+        textpixels = self.font.render(str(int(1/self.fps_smoothing)) + "fps", True, (64,64,0))
+        self.screen.blit(textpixels, (self.xy[0]+self.size[0] - 70, self.xy[1]) )
 
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
-
-class Chart: # Maintain a chart
-    def __init__(self, scrfeen, xy, size):
-        self.screen = screen
-        self.xy = xy
-        self.size = size
-
-    def render(self):
-        pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0)
 
 class globals_class:
     suffix = ".h5"
@@ -176,57 +212,75 @@ pygame.display.set_caption('Neuron 2025')
 
 cells = Cells(screen, (0,0), (screen_height, screen_height))
 console = Console(screen, (screen_height, int(screen_height/2)), (screen_width - screen_height, screen_height-screen_height/2))
-console.add_line("Hello everyone")
-console.add_line("This is groovy")
-console.add_line("Let's do some shit")
-# sys.stdout = console.add_line
-print("Hello matey")
+sys.stdout = console
+print("Hello everyone")
+print("This is groovy")
+print("Let's do some shit")
 
 chart = Chart(screen, (screen_height, 0), (screen_width - screen_height, int(screen_height/2)))
 
 # Main loop
 running = True
 paused = False
-probe_mode = False
+show_probes = False
+add_probe = False
 show_ignition = False
 dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
+this_frame_start = time.time()
 while running:
-    t1 = time.time()
+    last_frame_start = this_frame_start
+    this_frame_start = time.time()
     do_step = False
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if console.is_click_within(pygame.mouse.get_pos()):
-                probe_mode = not probe_mode
+                show_probes = not show_probes
             else:
                 (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
                 if hit:
-                    if event.button==1:
-                        cells.set_active( (grid_x,grid_y), not cells.get_active((grid_x, grid_y)))
-                        dragging_state = cells.get_active((grid_x, grid_y))
+                    if add_probe:
+                        cells.add_probe( (grid_x, grid_y) )
+                        add_probe = False
                     else:
-                        cells.set_light( (grid_x, grid_y) )
+                        if event.button==1:
+                            cells.set_active( (grid_x,grid_y), not cells.get_active((grid_x, grid_y)))
+                            dragging_state = cells.get_active((grid_x, grid_y))
+                        else:
+                            cells.set_light( (grid_x, grid_y) )
         elif event.type == pygame.MOUSEMOTION:
             if event.buttons[0]:
                 (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
                 if hit:
                     cells.set_active( (grid_x,grid_y), dragging_state)
         elif event.type == pygame.KEYDOWN:
-            if (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
+            if event.key == 27: # ESC
                 running = False
-            elif event.key == 27: # ESC
-                running = False
-            elif event.key == ord('p'):
-                paused = not paused
             elif event.key == ord(' '):
                 paused = True
                 do_step = True
+            elif event.key >= ord('0') and event.key <= ord('9'):
+                console.add_char(chr(event.key))
+            elif event.key == ord('a'):
+                show_probes = True
+                add_probe = True
+            elif (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
+                running = False
+            elif event.key == ord('c'):   # Clear entire array
+                cells.reset(False)
+            elif event.key == ord('f'):   # Fill entire array
+                cells.reset(True)
             elif event.key == ord('i'):
                 show_ignition = not show_ignition
                 print("Show Ignition=",show_ignition)
-            elif event.key >= ord('0') and event.key <= ord('9'):
-                console.add_char(chr(event.key))
+            elif event.key == ord('l'):
+                globals.list_files()
+                filename = input("Enter filename to load: ")
+                if filename:
+                    globals.load(filename)
+            elif event.key == ord('p'):
+                paused = not paused
             elif event.key == ord('r'):
                 for i in range(int(cells.grid_size[0] * cells.grid_size[1] / 10)) : # Ignite a 1/10th of random pixels
                     cells.set_light( (random.randrange(cells.grid_size[0]), random.randrange(cells.grid_size[1])) )
@@ -235,13 +289,10 @@ while running:
                 filename = input("Enter filename to save: ")
                 if filename:
                     globals.save(filename)
-            elif event.key == ord('l'):
-                globals.list_files()
-                filename = input("Enter filename to load: ")
-                if filename:
-                    globals.load(filename)
             elif event.key == ord('v'):
                 globals.list_vars()
+            elif event.key == ord('z'):   # Zero (deactivate) entire array
+                cells.zero()
             elif event.key == pygame.K_UP:
                 globals.selected -= 1
                 globals.selected = globals.selected % len(globals.vars)
@@ -256,27 +307,19 @@ while running:
             elif event.key == pygame.K_RIGHT:
                 globals.set_selected(globals.get_selected() * 1.05)
                 globals.list_vars()
-            elif event.key == ord('f'):   # Fill entire array
-                cells.reset(True)
-            elif event.key == ord('c'):   # Clear entire array
-                if(input("clear array - sure?").strip().lower().startswith('y')):
-                    cells.reset(False)
-            elif event.key == ord('z'):   # Zero (deactivate) entire array
-                cells.zero()
         else:
             pass
 
     # Update the display with the new pixel array
     screen.fill((0,0,0))
-    cells.render()
-    console.render()
+    console.render(this_frame_start-last_frame_start)
     chart.render()
+    cells.render(show_probes)
     pygame.display.flip()
-
-    t2 = time.time()
 
     if (not paused) or do_step:
         cells.update()
+        chart.update(cells)
 
 # Quit pygame
 pygame.quit()

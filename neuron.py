@@ -4,7 +4,30 @@ import scipy
 import time, random, glob, sys
 import h5py # Cross-platform and open
 
-class Cells: # Maintain a grid of cells of excitable media
+class State: # A 2D array of excitable media
+    def __init__(self, grid_size):
+        self.grid_size = grid_size
+        self.active_array =   np.zeros(self.grid_size, dtype=bool)  # Is this location active (enabled, able to change: fed with energy, capable of ignition)?
+        self.energy_array =   np.zeros(self.grid_size, dtype=float) # How much energy is available at this location? This is equivalent to gas plus oxygen available, constantly being replenished, and used-up while lit
+        self.lit_array =      np.zeros(self.grid_size, dtype=bool)  # Is this pixel lit (burning energy)?
+        self.illumination_array = np.zeros(self.grid_size, dtype=float) # This is a temporary calculation, not a state variable - just made global so we can display it
+
+    def set_all_actives(self, state):
+        self.active_array[:] = state
+
+    def reset_energy_and_lit(self):
+        self.energy_array[:] = 0
+        self.lit_array[:] = False
+
+    def update(self, elapsed_s):
+        self.energy_array[self.active_array] = np.minimum(1, self.energy_array[self.active_array] + globals.get("SUPPLY/S") * elapsed_s) # Gas flows in
+        self.energy_array[self.lit_array] -= globals.get("CONSUME/S") * elapsed_s # Gas used-up if lit
+        self.lit_array[self.energy_array < globals.get("MIN_LIT")] = 0 # Flame goes out when energy used-up
+
+        self.illumination_array = scipy.ndimage.gaussian_filter(self.lit_array.astype(float), sigma=1.0, mode="constant") # "mode=constant" makes it treat pixels off the edge of the screen as having no energy (default is to reflect!)
+        self.lit_array[ (self.illumination_array > globals.get("MIN_STRIKE")) & (self.energy_array >= globals.get("MIN_LIT")) & (self.active_array==True)] = 1 # Light anything sufficiently-illuminated, and with enough energy available
+
+class Cells: # Maintain a grid of cells of state
     def __init__(self, screen, xy, size):
         self.grid_size = (32,32)
         # Graphics
@@ -13,38 +36,36 @@ class Cells: # Maintain a grid of cells of excitable media
         self.size = size
         self.pixel_scale = self.size[0] / self.grid_size[0] # Assume pixels are square
         self.surface = pygame.Surface(self.grid_size) # One pixel for every cell (then gets upscaled to fit screen)
+        self.focus = False
         # Cells
-        self.active_array =   np.zeros(self.grid_size, dtype=bool)  # Is this location active (able to change: fed with energy, capable of ignition)?
-        self.energy_array =   np.zeros(self.grid_size, dtype=float) # How much energy is available at this location? This is equivalent to gas plus oxygen available, constantly being replenished, and used-up while lit
-        self.lit_array =      np.zeros(self.grid_size, dtype=bool)  # Is this pixel lit (burning energy)?
-        self.ignition_array = np.zeros(self.grid_size, dtype=float) # This is a temporary calculation, not a state variable - just made global so we can display it
+        self.state = State(self.grid_size)
         self.reset(False)
         # Probes
         self.probe_font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
         self.probes = []
 
     def reset(self, state):
-        self.active_array[:] = state
+        self.state.set_all_actives(state)
         self.zero()
 
     def zero(self):
-        self.energy_array[:] = 0
-        self.lit_array[:] = False
+        self.state.reset_energy_and_lit()
 
     def render(self, show_probes):
         # Cells
         white_int = 1 + 256 + 256*256
+        S = self.state
         if show_ignition:
-            i = np.clip((self.ignition_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
+            i = np.clip((S.ignition_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
             pygame.surfarray.blit_array(self.surface, i * white_int)
         else:
-            e = np.clip((self.energy_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
+            e = np.clip((S.energy_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
     
             # show energy as white
             # pygame.surfarray.blit_array(self.surface, e * white_int)
     
             # energy as blue, lit as green, active as red
-            pygame.surfarray.blit_array(self.surface, e + 255 * 256 * self.lit_array + 255 * 256 * 256 * self.active_array )
+            pygame.surfarray.blit_array(self.surface, e + 255 * 256 * S.lit_array + 255 * 256 * 256 * S.active_array )
 
         pixels = pygame.transform.scale(self.surface, self.size)
         screen.blit(pixels, self.xy)
@@ -61,57 +82,84 @@ class Cells: # Maintain a grid of cells of excitable media
                 textpixels = self.probe_font.render(str(i),True,(255,255,255))
                 self.screen.blit(textpixels, (self.xy[0] + self.probes[i][0] * self.pixel_scale, self.xy[1] + self.probes[i][1] * self.pixel_scale) )
 
+        if self.focus:
+            pygame.draw.rect(self.screen, (255,255,255), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=1)
+
     def find_cell(self, screen_xy):
         cell_x, cell_y = int(screen_xy[0] / self.pixel_scale), int(screen_xy[1] / self.pixel_scale)
         hit = (0 <= cell_x < self.grid_size[0]) and (0 <= cell_y < self.grid_size[1])
         return hit,cell_x,cell_y
 
     def set_active(self, xy, state):
-        self.active_array[xy] = state
-        self.energy_array[xy] = 0
+        self.state.active_array[xy] = state
+        self.state.energy_array[xy] = 0
 
     def get_active(self, xy):
-        return self.active_array[xy]
+        return self.state.active_array[xy]
 
     def set_light(self, cell_xy): 
-        if self.active_array[cell_xy] and (self.energy_array[cell_xy] >= globals.get("MIN_LIT_ENERGY")):
-            self.lit_array[cell_xy] = 1
+        S = self.state
+        if S.active_array[cell_xy] and (S.energy_array[cell_xy] >= globals.get("MIN_LIT")):
+            S.lit_array[cell_xy] = 1
 
-    def update(self):
-        self.energy_array[self.active_array] = np.minimum(1, self.energy_array[self.active_array] + globals.get("ENERGY_SUPPLY_PER_TICK")) # Gas flows in
-        self.energy_array[self.lit_array] -= globals.get("ENERGY_CONSUMED_PER_TICK") # Gas used-up if lit
-        self.lit_array[self.energy_array < globals.get("MIN_LIT_ENERGY")] = 0 # Flame goes out when energy used-up
-
-        self.ignition_array = scipy.ndimage.gaussian_filter(self.lit_array.astype(float), sigma=1.0, mode="constant") # "mode=constant" makes it treat pixels off the edge of the screen as having no energy (default is to reflect!)
-        self.lit_array[ (self.ignition_array > globals.get("MIN_STRIKE_IGNITION")) & (self.energy_array >= globals.get("MIN_LIT_ENERGY")) & (self.active_array==True)] = 1 # Light anything sufficiently-close to a source of ignition, and with enough energy available
+    def update(self, elapsed_s):
+        self.state.update(elapsed_s)
 
     def add_probe(self, cell_xy):
         self.probes.append(cell_xy)
+
+    def is_click_within(self, xy):
+        return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
 class Chart: # Maintain a chart
     def __init__(self, screen, xy, size):
         self.screen = screen
         self.xy = xy
         self.size = size
-        self.trace_n_values = 50
-        self.scale = (size[0] / self.trace_n_values, self.size[1]) # Assumes that input range is 0..1
-        self.values = np.zeros(self.trace_n_values)
-        self.values[:] = np.nan
-        self.write_index = 0
+        self.ybot = self.xy[1] + self.size[1]
+        self.timescale_s = 1 # How many seconds does the screen width represent?
+        self.scale = (size[0] / self.timescale_s, self.size[1] / 1.0) # Assumes that input range is (seconds, 0..1)
+        self.energy_points = []
+        self.illumination_points = []
+        self.trig_time = None # The time at the left of the pane
+        self.focus = False
+        self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
 
     def render(self):
-        pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0)
-        for v in range(len(self.values)-1):
-            if self.values[v+1] != np.nan:
-                pygame.draw.line(self.screen, (255,255,255), (self.xy[0]+v*self.scale[0],self.xy[1]+self.size[1]-self.values[v]*self.scale[1]), (self.xy[0]+(v+1)*self.scale[0],self.xy[1]+self.size[1]-self.values[v+1]*self.scale[1]), 1)
+        pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0) # BG
+
+        y = self.ybot - globals.get("MIN_STRIKE") * self.scale[1]
+        pygame.draw.line(self.screen, (32,32,128), (self.xy[0],y), (self.xy[0]+self.size[0],y) )
+        self.screen.blit(self.font.render("MIN_STRIKE", True, (32,32,128)), (self.xy[0], y) )
+
+        y = self.ybot - globals.get("MIN_LIT") * self.scale[1]
+        self.screen.blit(self.font.render("MIN_LIT", True, (128,32,32)), (self.xy[0], y) )
+        pygame.draw.line(self.screen, (128,32,32), (self.xy[0],y), (self.xy[0]+self.size[0],y) )
+
+        if len(self.energy_points)>1:
+            pygame.draw.lines(self.screen, (192, 192, 192), False, self.energy_points, 1)
+        if len(self.illumination_points)>1:
+            pygame.draw.lines(self.screen, (255, 255, 192), False, self.illumination_points, 1)
+        if self.focus:
+            pygame.draw.rect(self.screen, (255,255,255), (self.xy[0]+1, self.xy[1]+1, self.size[0]-2, self.size[1]-2), width=1)
 
     def update(self, cells):
-        if self.write_index < self.trace_n_values:
+        if self.trig_time is None:
+            return
+        T = time.time() - self.trig_time
+        x = self.xy[0] + T * self.scale[0]
+        if T < self.timescale_s:
             for probe in cells.probes:
-                self.values[self.write_index] = cells.energy_array[probe]
-            self.write_index += 1
-        else:
-            self.write_index = 0
+                self.energy_points.append( (x, self.ybot - cells.state.energy_array[probe] * self.scale[1]) )
+                self.illumination_points.append( (x, self.ybot - cells.state.illumination_array[probe] * self.scale[1]) )
+
+    def trig(self): # reset the timebase
+        self.energy_points = []
+        self.illumination_points = []
+        self.trig_time = time.time()
+
+    def is_click_within(self, xy):
+        return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
 class Console: # Maintain a text console
     def __init__(self,screen, xy,size):
@@ -125,35 +173,40 @@ class Console: # Maintain a text console
         self.chars_high = int(size[1] / self.char_height_pixels) 
         self.strings = ["" for i in range(self.chars_high)] # A string for every row
         self.fps_smoothing = 0
+        self.focus = False
+
+    def scroll(self):
+        self.strings = self.strings[1:]
+        self.strings.append("")
 
     def add_char(self, c):
-        if len(self.strings[-1]) >= self.chars_wide:
-            self.strings = self.strings[1:]
-            self.strings.append("")
-        self.strings[-1] += c
+        if c == chr(10):
+            self.scroll()
+        else:
+            if len(self.strings[-1]) >= self.chars_wide:
+                self.scroll()
+            self.strings[-1] += c
+        sys.stderr.write(c)
 
-    def write(self, s): # Called by stdout
-        s = s.strip()
-        while s != "": # Wrap string if necessary
-            self.strings = self.strings[1:]
-            self.strings.append(s[0:self.chars_wide])
-            s = s[self.chars_wide:]
+    def write(self, s): # Called by stdout (with chr(10) for a newline)
+        for c in s:
+            self.add_char(c)
 
     def flush(self): # Necessary method to support stdout redirection
         pass
 
     def render(self, s_per_frame):
         for i in range(len(self.strings)):
-            textpixels = self.font.render(self.strings[i],True,(255,255,255))
-            self.screen.blit(textpixels, (self.xy[0], self.xy[1] + i * self.char_height_pixels))
+            self.screen.blit(self.font.render(self.strings[i],True,(255,255,255)), (self.xy[0], self.xy[1] + i * self.char_height_pixels))
         self.fps_smoothing = self.fps_smoothing * 0.99 + s_per_frame * 0.01 # Otherwise it jitters so much you can't read it
-        textpixels = self.font.render(str(int(1/self.fps_smoothing)) + "fps", True, (64,64,0))
-        self.screen.blit(textpixels, (self.xy[0]+self.size[0] - 70, self.xy[1]) )
+        self.screen.blit(self.font.render(str(int(1/self.fps_smoothing)) + "fps", True, (64,64,0)), (self.xy[0]+self.size[0] - 70, self.xy[1]) )
+        if self.focus:
+            pygame.draw.rect(self.screen, (255,255,255), (self.xy[0]+1, self.xy[1]+1, self.size[0]-2, self.size[1]-2), width=1)
 
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
-class globals_class:
+class Globals: 
     suffix = ".h5"
     selected = 0 # Which variable is currently selected for "tweaking"?
     def __init__(self):
@@ -170,33 +223,41 @@ class globals_class:
         self.vars[self.selected_key()] = value
     def get_selected(self):
         return self.vars[self.selected_key()]
-    def save(self, filename):
+    def save(self, filename, state):
         with h5py.File(filename + self.suffix, "w") as f:
-            f.create_dataset("active_array", data=active_array)
+            f.create_dataset("active_array", data=state.active_array)
+            f.create_dataset("energy_array", data=state.energy_array)
+            f.create_dataset("lit_array", data=state.lit_array)
             for key, value in self.vars.items():
                 f.attrs[key] = value
-    def load(self, filename):
-        with h5py.File(filename + self.suffix, "r") as f:
-            global active_array
-            active_array = f["active_array"][:]
-            energy_array[:] = 0
-            lit_array[:] = False
-            self.vars = {key: f.attrs[key] for key in f.attrs.keys()}
-            print(self.vars)
-    def list_files(self):
-        print(glob.glob("*" + self.suffix))
+    def load(self, filename, state):
+        try:
+            with h5py.File(filename + self.suffix, "r") as f:
+                state.active_array = f["active_array"][:]
+                if "energy_array" in f:
+                    state.energy_array = f["energy_array"][:]
+                else:
+                    state.energy_array[:] = 0
+                if "lit_array" in f:
+                    state.lit_array = f["lit_array"][:]
+                else:
+                    state.lit_array[:] = False
+                self.vars = {key: f.attrs[key] for key in f.attrs.keys()}
+        except Exception as e:
+            print(f"Error loading file '{filename}': {e}")
     def list_vars(self):
+        print()
         l = self.sorted_keys()
         for i in range(len(l)):
             print(l[i], self.vars[l[i]], ["","<-"][i==self.selected])
 
-globals = globals_class()
+globals = Globals()
 
 # Dynamics
-globals.set("MIN_LIT_ENERGY", 0.05) # Can only continue burning, if at least this much energy available
-globals.set("MIN_STRIKE_IGNITION", 0.05) # Can only be lit, if at least this much ignition energy is available (and MIN_LIT_ENERGY is met)
-globals.set("ENERGY_SUPPLY_PER_TICK", 0.005)
-globals.set("ENERGY_CONSUMED_PER_TICK", 0.03) # When lit
+globals.set("MIN_STRIKE", 0.08) # Can only be lit, if at least this much ignition energy is available (and MIN_LIT_ENERGY is met)
+globals.set("MIN_LIT", 0.2) # Can only continue burning, if at least this much energy available
+globals.set("SUPPLY/S", 1.0) # Always
+globals.set("CONSUME/S", 5.0) # When lit
 
 
 # Create the screen
@@ -222,11 +283,11 @@ chart = Chart(screen, (screen_height, 0), (screen_width - screen_height, int(scr
 # Main loop
 running = True
 paused = False
-show_probes = False
 add_probe = False
 show_ignition = False
 dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
 this_frame_start = time.time()
+globals.load("recent", cells.state)
 while running:
     last_frame_start = this_frame_start
     this_frame_start = time.time()
@@ -235,8 +296,19 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            if console.is_click_within(pygame.mouse.get_pos()):
-                show_probes = not show_probes
+            P = pygame.mouse.get_pos()
+            if chart.is_click_within(P):
+                chart.focus = True
+                cells.focus = False
+                console.focus = False
+            elif cells.is_click_within(P) and not cells.focus:
+                cells.focus = True
+                chart.focus = False
+                console.focus = False
+            elif console.is_click_within(P):
+                console.focus = True
+                cells.focus = False
+                chart.focus = False
             else:
                 (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
                 if hit:
@@ -249,6 +321,7 @@ while running:
                             dragging_state = cells.get_active((grid_x, grid_y))
                         else:
                             cells.set_light( (grid_x, grid_y) )
+                            chart.trig()
         elif event.type == pygame.MOUSEMOTION:
             if event.buttons[0]:
                 (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
@@ -263,7 +336,6 @@ while running:
             elif event.key >= ord('0') and event.key <= ord('9'):
                 console.add_char(chr(event.key))
             elif event.key == ord('a'):
-                show_probes = True
                 add_probe = True
             elif (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
                 running = False
@@ -314,13 +386,14 @@ while running:
     screen.fill((0,0,0))
     console.render(this_frame_start-last_frame_start)
     chart.render()
-    cells.render(show_probes)
+    cells.render(True)
     pygame.display.flip()
 
     if (not paused) or do_step:
-        cells.update()
+        cells.update(this_frame_start - last_frame_start)
         chart.update(cells)
 
 # Quit pygame
+globals.save("recent", cells.state)
 pygame.quit()
 

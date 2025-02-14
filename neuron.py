@@ -2,8 +2,8 @@ import pygame
 import numpy as np
 import scipy
 import math
+import json
 import time, random, glob, sys
-import h5py # Cross-platform and open
 
 # Colouring of cells, charts etc.:
 # An enabled cell is shown dark grey even when not alight
@@ -36,8 +36,6 @@ class State: # A 2D array of excitable media. This is the entire model of the be
         self.flame_array[:] = 0
 
     def update(self, elapsed_s):
-        # Gas flows in at a linear rate
-        self.energy_array[self.enabled_array] = np.minimum(1, self.energy_array[self.enabled_array] + globals.get("SUPPLY/S") * elapsed_s) 
         # How illuminated is this cell (from itself and neighbours)
         self.illumination_array = globals.get("COUPLING_GAIN") * scipy.ndimage.gaussian_filter(self.flame_array, sigma=globals.get("COUPLING_DIST"), mode="constant") 
         # self.illumination_array = illum + (self.illumination_array - illum) * math.exp(-globals.get("COUPLING_RATE") * elapsed_s)
@@ -45,10 +43,14 @@ class State: # A 2D array of excitable media. This is the entire model of the be
         self.flame_array[   (self.enabled_array==True) & 
                             (self.flame_array==0) &
                             (self.illumination_array >= globals.get("MIN_STRIKE")) ] = globals.get("STRIKE_LEVEL") 
+        # Flame consumes energy according to how bright it's burning
+        self.energy_array = np.maximum(0,self.energy_array - self.flame_array * globals.get("FLAME_CONSUME") * elapsed_s) 
         # Extinguish any cell which is burning at below the sustaining level
-        self.flame_array[   (self.flame_array < globals.get("MIN_FLAME")) ] = 0
-        # Consume energy according to how bright cell burning
-        self.energy_array = np.maximum(0,self.energy_array - self.flame_array * elapsed_s) 
+        self.flame_array[   (self.flame_array < globals.get("MIN_FLAME")) | (self.energy_array == 0) ] = 0
+        # Flame brightness depends on how much energy is available
+        self.flame_array = np.where(self.flame_array > 0, self.energy_array + (self.flame_array - self.energy_array) * math.exp(-1.0/globals.get("FLAME_INERTIA") * elapsed_s), self.flame_array)
+        # Energy flows in at a linear rate
+        self.energy_array[self.enabled_array] = np.minimum(1, self.energy_array[self.enabled_array] + globals.get("SUPPLY/S") * elapsed_s) 
 
 class Cells: # Maintain a grid of cells of state
     def __init__(self, screen, xy, size):
@@ -63,9 +65,7 @@ class Cells: # Maintain a grid of cells of state
         # Cells
         self.state = State(self.grid_size)
         self.reset(False)
-        # Probes
         self.probe_font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
-        self.probes = []
 
     def reset(self, state):
         self.state.set_all_enableds(state)
@@ -74,7 +74,7 @@ class Cells: # Maintain a grid of cells of state
     def zero(self):
         self.state.reset_energy_and_flame()
 
-    def render(self, show_illumination, show_probes):
+    def render(self, show_illumination, probes):
         # Cells
         white_int = 1 + 256 + 256*256
         S = self.state
@@ -101,10 +101,9 @@ class Cells: # Maintain a grid of cells of state
             pygame.draw.line(self.screen, (32,32,32), (self.xy[0], self.xy[1]+y*self.pixel_scale), (self.xy[0]+self.size[0], self.xy[1]+y*self.pixel_scale), 1)
 
         # Probes
-        if show_probes:
-            for i in range(len(self.probes)):
-                textpixels = self.probe_font.render(str(i),True,(255,255,255))
-                self.screen.blit(textpixels, (self.xy[0] + self.probes[i][0] * self.pixel_scale, self.xy[1] + self.probes[i][1] * self.pixel_scale) )
+        for i in range(len(probes)):
+            textpixels = self.probe_font.render(str(i),True,(255,255,255))
+            self.screen.blit(textpixels, (self.xy[0] + probes[i]["xy"][0] * self.pixel_scale, self.xy[1] + probes[i]["xy"][1] * self.pixel_scale) )
 
         if self.focus:
             pygame.draw.rect(self.screen, (255,255,255), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=1)
@@ -130,9 +129,6 @@ class Cells: # Maintain a grid of cells of state
     def update(self, elapsed_s):
         self.state.update(elapsed_s)
 
-    def add_probe(self, cell_xy):
-        self.probes.append(cell_xy)
-
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
@@ -142,17 +138,19 @@ class Chart: # Maintain a chart
         self.xy = xy
         self.size = size
         self.ybot = self.xy[1] + self.size[1]
-        self.timescale_s = 3 # How many seconds does the screen width represent?
+        self.timescale_s = 1 # How many seconds does the screen width represent?
+        self.retrig = False # When we get to right of screen, restart?
+        self.trig_time = None # The time at the left of the pane. None for "not triggered".
         self.scale = (size[0] / self.timescale_s, self.size[1] / 1.0) # Assumes that input range is (seconds, 0..1)
         self.energy_points = [] # (t,val)
         self.illumination_points = [] # (t,val)
         self.flame_points = [] # (t,val)
-        self.trig_time = None # The time at the left of the pane
         self.focus = False
         self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
+        self.probes = [] # A list of dicts, each containing "xy", "energy_chart", "flame_chart" etc.
 
     def render(self):
-        pygame.draw.rect(self.screen, (0,0,64), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0) # BG
+        pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0) # BG
 
         self.screen.blit(self.font.render("ENERGY", True, energy_colour), (self.xy[0]+self.size[0]-140,self.xy[1]))
         self.screen.blit(self.font.render("FLAME", True, flame_colour), (self.xy[0]+self.size[0]-140,self.xy[1]+20))
@@ -166,12 +164,12 @@ class Chart: # Maintain a chart
         self.screen.blit(self.font.render("MIN_FLAME", True, (64,64,64)), (self.xy[0], y) )
         pygame.draw.line(self.screen, (64,64,64), (self.xy[0],y), (self.xy[0]+self.size[0],y) )
 
-        if len(self.energy_points)>1:
-            pygame.draw.lines(self.screen, energy_colour, False, self.energy_points, 1) 
-        if len(self.flame_points)>1:
-            pygame.draw.lines(self.screen, flame_colour, False, self.flame_points, 1)
-        if len(self.illumination_points)>1:
-            pygame.draw.lines(self.screen, illumination_colour, False, self.illumination_points, 1)
+        for probe in self.probes:
+            if len(probe["energy_chart"])>1:
+                pygame.draw.lines(self.screen, illumination_colour, False, probe["illumination_chart"], 1) # At back
+                pygame.draw.lines(self.screen, energy_colour, False, probe["energy_chart"], 1) 
+                pygame.draw.lines(self.screen, flame_colour, False, probe["flame_chart"], 1)
+
         if self.focus:
             pygame.draw.rect(self.screen, (255,255,255), (self.xy[0]+1, self.xy[1]+1, self.size[0]-2, self.size[1]-2), width=1)
 
@@ -181,18 +179,32 @@ class Chart: # Maintain a chart
         T = time.time() - self.trig_time
         x = self.xy[0] + T * self.scale[0]
         if T < self.timescale_s:
-            for probe in cells.probes:
+            for probe in self.probes:
                 S = cells.state
-                self.energy_points.append( (x, self.ybot - S.energy_array[probe] * self.scale[1]) )
-                self.flame_points.append( (x, self.ybot - S.flame_array[probe] * self.scale[1]) )
-                self.illumination_points.append( (x, self.ybot - S.illumination_array[probe] * self.scale[1]) )
-                # print("E",S.energy_array[probe],"F",S.flame_array[probe],"I",S.illumination_array[probe])
+                probe["energy_chart"].append( (x, self.ybot - S.energy_array[probe["xy"]] * self.scale[1]) )
+                probe["flame_chart"].append( (x, self.ybot - S.flame_array[probe["xy"]] * self.scale[1]) )
+                probe["illumination_chart"].append( (x, self.ybot - S.illumination_array[probe["xy"]] * self.scale[1]) )
+        else:
+            if self.retrig:
+                self.trig()
 
     def trig(self): # reset the timebase
-        self.energy_points = []
-        self.illumination_points = []
-        self.flame_points = []
+        for p in self.probes:
+            p["energy_chart"] = []
+            p["flame_chart"] = []
+            p["illumination_chart"] = []
         self.trig_time = time.time()
+
+    def add_probe(self, cell_xy):
+        self.probes.append({"xy":cell_xy, "energy_chart":[], "flame_chart":[], "illumination_chart":[]})
+
+    def delete_probe(self, cell_xy):
+        elem = None
+        for p in self.probes:
+            if p["xy"] == cell_xy:
+                elem = p
+        if elem is not None:
+            self.probes.remove(elem)
 
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
@@ -242,8 +254,8 @@ class Console: # Maintain a text console
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
-class Globals: 
-    suffix = ".h5"
+class Globals:  # Maintain global variables, and deal with saving & loading all program state
+    suffix = ".json"
     selected = 0 # Which variable is currently selected for "tweaking"?
     def __init__(self):
         self.vars = {}
@@ -259,31 +271,23 @@ class Globals:
         self.vars[self.selected_key()] = value
     def get_selected(self):
         return self.vars[self.selected_key()]
-    def save(self, filename, cells):
-        with h5py.File(filename + self.suffix, "w") as f:
-            f.create_dataset("enabled_array", data=cells.state.enabled_array)
-            f.create_dataset("energy_array", data=cells.state.energy_array)
-            f.create_dataset("flame_array", data=cells.state.flame_array)
-            f.create_dataset("probes", data=cells.probes)
-            for key, value in self.vars.items():
-                f.attrs[key] = value
-    def load(self, filename, cells):
+    def save(self, filename, cells, chart):
+        obj = { "enabled" : cells.state.enabled_array.tolist(), "energy" : cells.state.energy_array.tolist(), "flame" : cells.state.flame_array.tolist(),
+               "probes" : chart.probes,
+               "vars" : self.vars}
+        with open(filename + self.suffix,"wt") as f:
+            json.dump(obj, f)
+    def load(self, filename, cells, chart):
         try:
-            with h5py.File(filename + self.suffix, "r") as f:
-                cells.state.enabled_array = f["enabled_array"][:]
-                if "energy_array" in f:
-                    cells.state.energy_array = f["energy_array"][:]
-                else:
-                    cells.state.energy_array[:] = 0
-                if "flame_array" in f:
-                    cells.state.flame_array = f["flame_array"][:]
-                else:
-                    cells.state.flame_array[:] = False
-                if "probes" in f:
-                    cells.probes = f["probes"][:]
-                else:
-                    cells.probes = []
-                self.vars = {key: f.attrs[key] for key in f.attrs.keys()}
+            with open(filename + self.suffix,"rt") as f:
+                obj = json.load(f)
+            cells.state.enabled_array = np.array(obj["enabled"])
+            cells.state.energy_array = np.array(obj["energy"])
+            cells.state.flame_array = np.array(obj["flame"])
+            chart.probes = obj["probes"]
+            for i in range(len(chart.probes)):
+                chart.probes[i]["xy"] = tuple(chart.probes[i]["xy"]) # JSON can't store tuples, and we need them as tuples so numpy understands they're co-ordinates
+            self.vars.update(obj["vars"])
         except Exception as e:
             print(f"Error loading file '{filename}': {e}")
     def list_vars(self):
@@ -295,13 +299,14 @@ class Globals:
 globals = Globals()
 
 # Dynamics
-globals.set("MIN_STRIKE", 0.5) # Can only be lit, if at least this much illumination is happening (and MIN_LIT_ENERGY is met)
-globals.set("MIN_FLAME", 0.2) # Can only continue burning, if at least this illuminated
+globals.set("MIN_STRIKE", 0.24) # Can only be lit, if at least this much illumination is happening (and MIN_LIT_ENERGY is met)
+globals.set("MIN_FLAME", 0.1) # Can only continue burning, if at least this illuminated
 globals.set("SUPPLY/S", 1.0) # Always
 globals.set("COUPLING_DIST", 1.0) # Rate at which illumination affects neighbouring cells 
-globals.set("COUPLING_GAIN", 1.0) # "Reach" from one cell to the next
-globals.set("STRIKE_LEVEL",0.5) # The level at which flame ignites
-
+globals.set("COUPLING_GAIN", 8.0) # "Reach" from one cell to the next
+globals.set("STRIKE_LEVEL",0.2) # The level at which flame ignites
+globals.set("FLAME_CONSUME", 8) # How much energy the flame consumes (relative to its size)
+globals.set("FLAME_INERTIA", 0.07) # How quickly the size of the flame responds to the energy available
 
 # Create the screen
 pygame.init()
@@ -318,19 +323,17 @@ cells = Cells(screen, (0,0), (screen_height, screen_height))
 console = Console(screen, (screen_height, int(screen_height/2)), (screen_width - screen_height, screen_height-screen_height/2))
 sys.stdout = console
 print("Hello everyone")
-print("This is groovy")
-print("Let's do some shit")
 
 chart = Chart(screen, (screen_height, 0), (screen_width - screen_height, int(screen_height/2)))
 
 # Main loop
 running = True
 paused = False
-add_probe = False
+modify_probe = ""
 show_illumination = False
 dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
 this_frame_start = time.time()
-globals.load("recent", cells)
+globals.load("recent", cells, chart)
 while running:
     last_frame_start = this_frame_start
     this_frame_start = time.time()
@@ -354,9 +357,12 @@ while running:
                 chart.focus = False
             (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
             if hit:
-                if add_probe:
-                    cells.add_probe( (grid_x, grid_y) )
-                    add_probe = False
+                if modify_probe=="add":
+                    chart.add_probe( (grid_x, grid_y) )
+                    modify_probe = ""
+                elif modify_probe=="delete":
+                    chart.delete_probe( (grid_x, grid_y) )
+                    modify_probe = ""
                 else:
                     if event.button==1:
                         cells.set_enabled( (grid_x,grid_y), not cells.get_enabled((grid_x, grid_y)))
@@ -378,11 +384,13 @@ while running:
             elif event.key >= ord('0') and event.key <= ord('9'):
                 console.add_char(chr(event.key))
             elif event.key == ord('a'):
-                add_probe = True
+                modify_probe = "add"
             elif (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
                 running = False
             elif event.key == ord('c'):   # Clear entire array
                 cells.reset(False)
+            elif event.key == ord('d'):
+                modify_probe = "delete"
             elif event.key == ord('f'):   # Fill entire array
                 cells.reset(True)
             elif event.key == ord('i'):
@@ -392,7 +400,7 @@ while running:
                 globals.list_files()
                 filename = input("Enter filename to load: ")
                 if filename:
-                    globals.load(filename, cells)
+                    globals.load(filename, cells, chart)
             elif event.key == ord('p'):
                 paused = not paused
             elif event.key == ord('r'):
@@ -402,7 +410,7 @@ while running:
                 globals.list_files()
                 filename = input("Enter filename to save: ")
                 if filename:
-                    globals.save(filename, cells)
+                    globals.save(filename, cells, chart)
             elif event.key == ord('v'):
                 globals.list_vars()
             elif event.key == ord('z'):   # Zero (deactivate) entire array
@@ -428,7 +436,7 @@ while running:
     screen.fill((0,0,0))
     console.render(this_frame_start-last_frame_start)
     chart.render()
-    cells.render(show_illumination, True)
+    cells.render(show_illumination, chart.probes)
     pygame.display.flip()
 
     if (not paused) or do_step:
@@ -436,6 +444,6 @@ while running:
         chart.update(cells)
 
 # Quit pygame
-globals.save("recent", cells)
+globals.save("recent", cells, chart)
 pygame.quit()
 

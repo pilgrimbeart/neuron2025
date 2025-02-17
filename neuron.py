@@ -5,6 +5,9 @@ import math
 import json
 import time, random, glob, sys
 
+# Y axis goes downward
+# 2D numpy arrays are indexed [x,y]
+
 # Colouring of cells, charts etc.:
 # An enabled cell is shown dark grey even when not alight
 # ENERGY is GREEN - the energy available in a cell
@@ -38,7 +41,6 @@ class State: # A 2D array of excitable media. This is the entire model of the be
     def update(self, elapsed_s):
         # How illuminated is this cell (from itself and neighbours)
         self.illumination_array = globals.get("COUPLING_GAIN") * scipy.ndimage.gaussian_filter(self.flame_array, sigma=globals.get("COUPLING_DIST"), mode="constant") 
-        # self.illumination_array = illum + (self.illumination_array - illum) * math.exp(-globals.get("COUPLING_RATE") * elapsed_s)
         # Light any cell which is enabled, not already lit, and sufficiently-illuminated
         self.flame_array[   (self.enabled_array==True) & 
                             (self.flame_array==0) &
@@ -51,6 +53,24 @@ class State: # A 2D array of excitable media. This is the entire model of the be
         self.flame_array = np.where(self.flame_array > 0, self.energy_array + (self.flame_array - self.energy_array) * math.exp(-1.0/globals.get("FLAME_INERTIA") * elapsed_s), self.flame_array)
         # Energy flows in at a linear rate
         self.energy_array[self.enabled_array] = np.minimum(1, self.energy_array[self.enabled_array] + globals.get("SUPPLY/S") * elapsed_s) 
+
+    def shift(self, dx, dy):
+        def scroll(arr):
+            arr = np.roll(arr, shift=dx, axis=0)
+            arr = np.roll(arr, shift=dy, axis=1)
+            if dx > 0:
+                arr[0:dx, :] = 0
+            if dx < 0:
+                arr[dx:, :] = 0
+            if dy > 0:
+                arr[:,0:dy] = 0
+            if dy < 0:
+                arr[:,dy:] = 0
+            return arr
+        self.enabled_array = scroll(self.enabled_array)
+        self.energy_array = scroll(self.energy_array)
+        self.flame_array = scroll(self.flame_array)
+        self.illumination_array = scroll(self.illumination_array)
 
 class Cells: # Maintain a grid of cells of state
     def __init__(self, screen, xy, size):
@@ -73,6 +93,9 @@ class Cells: # Maintain a grid of cells of state
 
     def zero(self):
         self.state.reset_energy_and_flame()
+
+    def shift(self,dx,dy):
+        self.state.shift(dx,dy)
 
     def render(self, show_illumination, probes):
         # Cells
@@ -132,16 +155,15 @@ class Cells: # Maintain a grid of cells of state
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
-class Chart: # Maintain a chart
+class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
     def __init__(self, screen, xy, size):
         self.screen = screen
         self.xy = xy
         self.size = size
         self.ybot = self.xy[1] + self.size[1]
-        self.timescale_s = 1 # How many seconds does the screen width represent?
+        self.set_timescale_s(1)
         self.retrig = False # When we get to right of screen, restart?
         self.trig_time = None # The time at the left of the pane. None for "not triggered".
-        self.scale = (size[0] / self.timescale_s, self.size[1] / 1.0) # Assumes that input range is (seconds, 0..1)
         self.energy_points = [] # (t,val)
         self.illumination_points = [] # (t,val)
         self.flame_points = [] # (t,val)
@@ -149,8 +171,14 @@ class Chart: # Maintain a chart
         self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
         self.probes = [] # A list of dicts, each containing "xy", "energy_chart", "flame_chart" etc.
 
+    def set_timescale_s(self, timescale_s):
+        self.timescale_s = timescale_s # How many seconds does the screen width represent?
+        self.scale = (self.size[0] / self.timescale_s, self.size[1] / 1.0) # Assumes that input range is (seconds, 0..1)
+
     def render(self):
         pygame.draw.rect(self.screen, (0,0,32), (self.xy[0], self.xy[1], self.size[0], self.size[1]), width=0) # BG
+
+        self.screen.blit(self.font.render(("%3.1f" % self.timescale_s)+"s", True, (255,255,255)), (self.xy[0]+self.size[0]-40,self.xy[1]))
 
         self.screen.blit(self.font.render("ENERGY", True, energy_colour), (self.xy[0]+self.size[0]-140,self.xy[1]))
         self.screen.blit(self.font.render("FLAME", True, flame_colour), (self.xy[0]+self.size[0]-140,self.xy[1]+20))
@@ -205,6 +233,16 @@ class Chart: # Maintain a chart
                 elem = p
         if elem is not None:
             self.probes.remove(elem)
+
+    def shift_probes(self, dx, dy, cells): # We need cells so we can remove any probes which fall off the edge of the display
+        to_delete = []
+        for p in self.probes:
+            p["xy"] = (p["xy"][0] + dx, p["xy"][1] + dy)
+            if (p["xy"][0] < 0) or (p["xy"][0] >= cells.state.grid_size[0]) or \
+                (p["xy"][1] < 0) or (p["xy"][1] >= cells.state.grid_size[1]): # Fallen off edge
+                    to_delete.append(p)
+        for d in to_delete:
+            self.probes.remove(d)
 
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
@@ -276,7 +314,7 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
                "probes" : chart.probes,
                "vars" : self.vars}
         with open(filename + self.suffix,"wt") as f:
-            json.dump(obj, f)
+            json.dump(obj, f, indent=4)
     def load(self, filename, cells, chart):
         try:
             with open(filename + self.suffix,"rt") as f:
@@ -299,14 +337,14 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
 globals = Globals()
 
 # Dynamics
-globals.set("MIN_STRIKE", 0.24) # Can only be lit, if at least this much illumination is happening (and MIN_LIT_ENERGY is met)
-globals.set("MIN_FLAME", 0.1) # Can only continue burning, if at least this illuminated
-globals.set("SUPPLY/S", 1.0) # Always
 globals.set("COUPLING_DIST", 1.0) # Rate at which illumination affects neighbouring cells 
-globals.set("COUPLING_GAIN", 8.0) # "Reach" from one cell to the next
-globals.set("STRIKE_LEVEL",0.2) # The level at which flame ignites
+globals.set("COUPLING_GAIN", 4.0) # "Reach" from one cell to the next
 globals.set("FLAME_CONSUME", 8) # How much energy the flame consumes (relative to its size)
 globals.set("FLAME_INERTIA", 0.07) # How quickly the size of the flame responds to the energy available
+globals.set("MIN_FLAME", 0.1) # Can only continue burning, if at least this illuminated
+globals.set("MIN_STRIKE", 0.24) # Can only be lit, if at least this much illumination is happening (and MIN_LIT_ENERGY is met)
+globals.set("STRIKE_LEVEL",0.2) # The level at which flame ignites
+globals.set("SUPPLY/S", 1.0) # constant energy flow in
 
 # Create the screen
 pygame.init()
@@ -383,6 +421,10 @@ while running:
                 do_step = True
             elif event.key >= ord('0') and event.key <= ord('9'):
                 console.add_char(chr(event.key))
+            elif event.key == ord('-'): # Zoom out, i.e. make timescale larger
+                chart.set_timescale_s(chart.timescale_s * 1.25)
+            elif event.key == ord("="): # Same as "+" so zoom in
+                chart.set_timescale_s(chart.timescale_s / 1.25)
             elif event.key == ord('a'):
                 modify_probe = "add"
             elif (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
@@ -411,10 +453,17 @@ while running:
                 filename = input("Enter filename to save: ")
                 if filename:
                     globals.save(filename, cells, chart)
+            elif event.key == ord('t'):
+                chart.retrig = not chart.retrig
             elif event.key == ord('v'):
                 globals.list_vars()
             elif event.key == ord('z'):   # Zero (deactivate) entire array
                 cells.zero()
+            elif (event.mod & pygame.KMOD_SHIFT) and (event.key in [pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT]):
+                dx = (event.key==pygame.K_RIGHT) - (event.key==pygame.K_LEFT)
+                dy = (event.key==pygame.K_DOWN) - (event.key==pygame.K_UP)
+                cells.shift(dx,dy)
+                chart.shift_probes(dx,dy,cells)
             elif event.key == pygame.K_UP:
                 globals.selected -= 1
                 globals.selected = globals.selected % len(globals.vars)

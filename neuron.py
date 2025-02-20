@@ -3,6 +3,7 @@ import numpy as np
 import scipy
 import math
 import json
+import copy
 import time, random, glob, sys
 
 # Y axis goes downward
@@ -80,20 +81,67 @@ class State: # A 2D array of excitable media. This is the entire model of the be
         self.flame_array = scroll(self.flame_array)
         self.illumination_array = scroll(self.illumination_array)
 
-class Cells: # Maintain a grid of cells of state
-    def __init__(self, screen, xy, size):
-        self.grid_size = (32,32)
-        # Graphics
+    def paste(self, source_state):
+        def paste_it(foreground, background):
+            # Paste a 2D numpy array into the centre of another (which might be of different size) losing any pixels which don't overlap
+            bg_h, bg_w = background.shape
+            fg_h, fg_w = foreground.shape
+                    
+            # Compute top-left corner for foreground placement
+            start_y = max(0, (bg_h - fg_h) // 2)
+            start_x = max(0, (bg_w - fg_w) // 2)
+                                    
+            # Compute region where foreground will actually fit
+            end_y = min(bg_h, start_y + fg_h)
+            end_x = min(bg_w, start_x + fg_w)
+                                                    
+            # Compute corresponding slice of the foreground
+            fg_start_y = max(0, -((bg_h - fg_h) // 2))
+            fg_start_x = max(0, -((bg_w - fg_w) // 2))
+            fg_end_y = fg_start_y + (end_y - start_y)
+            fg_end_x = fg_start_x + (end_x - start_x)
+                                                                            
+            # Copy the overlapping part of foreground onto background
+            print("Copying into",start_y,end_y,start_x,end_x,"from",fg_start_y,fg_end_y,fg_start_x,fg_end_x)
+            print("Before copy, pixels lit in background",np.count_nonzero(background),"foreground",np.count_nonzero(foreground))
+            background[start_y:end_y, start_x:end_x] = foreground[fg_start_y:fg_end_y, fg_start_x:fg_end_x]
+            print("After copy, pixels lit in background",np.count_nonzero(background),"foreground",np.count_nonzero(foreground))
+        paste_it(source_state.enabled_array, self.enabled_array)
+        paste_it(source_state.energy_array, self.energy_array)
+        paste_it(source_state.flame_array, self.flame_array)
+        paste_it(source_state.illumination_array, self.illumination_array)
+
+
+class Cells: # Maintain a grid of cells of stat
+    def __init__(self, screen, screen_xy, screen_size, grid_size):
         self.screen = screen
-        self.xy = xy
-        self.size = size
+        self.xy = screen_xy
+        self.size = screen_size
+        self.probe_font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
+        self.focus = False
+        self.state = None
+        self.set_grid_size(grid_size)
+
+    def set_grid_size(self, grid_size): # Can be called again later to change grid size
+        # Cells
+        if self.state is None:
+            print("Creating grid of size",grid_size)
+            self.grid_size = grid_size
+            self.state = State(self.grid_size)
+            self.reset(False)
+        else: # There's a previous state to copy
+            print("Changing grid size from",self.grid_size,"to",grid_size)
+            old_state = copy.deepcopy(self.state)
+            self.grid_size = grid_size
+            self.state = State(self.grid_size)
+            self.reset(False)
+            self.state.paste(old_state)
+        # Graphics
         self.pixel_scale = self.size[0] / self.grid_size[0] # Assume pixels are square
         self.surface = pygame.Surface(self.grid_size) # One pixel for every cell (then gets upscaled to fit screen)
-        self.focus = False
-        # Cells
-        self.state = State(self.grid_size)
-        self.reset(False)
-        self.probe_font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
+
+    def increase_grid_size(self):
+        self.set_grid_size( (self.grid_size[0] * 2, self.grid_size[1] * 2) )
 
     def reset(self, state):
         self.state.set_all_enableds(state)
@@ -127,10 +175,11 @@ class Cells: # Maintain a grid of cells of state
         screen.blit(pixels, self.xy)
 
         # Grid
-        for x in range(self.grid_size[0]+1):
-            pygame.draw.line(self.screen, (32,32,32), (self.xy[0]+x*self.pixel_scale,self.xy[1]), (self.xy[0]+x*self.pixel_scale,self.xy[1]+self.size[1]), 1)
-        for y in range(self.grid_size[1]+1):
-            pygame.draw.line(self.screen, (32,32,32), (self.xy[0], self.xy[1]+y*self.pixel_scale), (self.xy[0]+self.size[0], self.xy[1]+y*self.pixel_scale), 1)
+        if self.pixel_scale > 6:
+            for x in range(self.grid_size[0]+1):
+                pygame.draw.line(self.screen, (32,32,32), (self.xy[0]+x*self.pixel_scale,self.xy[1]), (self.xy[0]+x*self.pixel_scale,self.xy[1]+self.size[1]), 1)
+            for y in range(self.grid_size[1]+1):
+                pygame.draw.line(self.screen, (32,32,32), (self.xy[0], self.xy[1]+y*self.pixel_scale), (self.xy[0]+self.size[0], self.xy[1]+y*self.pixel_scale), 1)
 
         # Probes
         for i in range(len(probes)):
@@ -297,6 +346,7 @@ class Console: # Maintain a text console including an input line
             self.input = self.input + c
 
     def write(self, s): # Called by stdout (with chr(10) for a newline)
+        sys.stderr.write(s) # Echo to terminal for debugging
         for c in s:
             self.add_console_char(c)
 
@@ -352,6 +402,9 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
         try:
             with open(filename + self.suffix,"rt") as f:
                 obj = json.load(f)
+            x,y = len(obj["enabled"]),len(obj["enabled"][0])
+            print("Loading",filename,"of size",(x,y))
+            cells.set_grid_size( (x,y) )
             cells.state.enabled_array = np.array(obj["enabled"])
             cells.state.energy_array = np.array(obj["energy"])
             cells.state.flame_array = np.array(obj["flame"])
@@ -401,7 +454,7 @@ if len(sys.argv) > 1:
 screen = pygame.display.set_mode((screen_width, screen_height), display=display, flags=pygame.FULLSCREEN | pygame.SCALED)
 pygame.display.set_caption('Neuron 2025')
 
-cells = Cells(screen, (0,0), (screen_height, screen_height))
+cells = Cells(screen, (0,0), (screen_height, screen_height), (32,32))
 cells.focus = True
 console = Console(screen, (screen_height, int(screen_height/2)), (screen_width - screen_height, screen_height-screen_height/2), command_execute)
 sys.stdout = console
@@ -488,7 +541,11 @@ while running:
                     elif event.key == ord('t'):
                         chart.retrig = not chart.retrig
                 if cells.focus:
-                    if event.key == ord(' '):
+                    if event.key == ord("="): # Same as "+" so zoom in
+                        pass
+                    elif event.key == ord("-"):
+                        cells.increase_grid_size() # Zooming out means making the grid bigger
+                    elif event.key == ord(' '):
                         paused = True
                         do_step = True
                     elif event.key == ord('a'):

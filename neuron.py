@@ -38,21 +38,29 @@ class State: # A 2D array of excitable media. This is the entire model of the be
         self.energy_array[:] = 0
         self.flame_array[:] = 0
 
-    def update(self, elapsed_s):
-        # How illuminated is this cell (from itself and neighbours)
+    def update(self, delta_s):
+        # I = gauss(F)      How illuminated is this cell (from itself and neighbours)
         self.illumination_array = globals.get("COUPLING_GAIN") * scipy.ndimage.gaussian_filter(self.flame_array, sigma=globals.get("COUPLING_DIST"), mode="constant") 
-        # Light any cell which is enabled, not already lit, and sufficiently-illuminated
+
+        # F.strike(I)       Light any sufficiently-illuminated cell which is enabled and not already lit
         self.flame_array[   (self.enabled_array==True) & 
                             (self.flame_array==0) &
                             (self.illumination_array >= globals.get("MIN_STRIKE")) ] = globals.get("STRIKE_LEVEL") 
-        # Flame consumes energy according to how bright it's burning
-        self.energy_array = np.maximum(0,self.energy_array - self.flame_array * globals.get("FLAME_CONSUME") * elapsed_s) 
-        # Extinguish any cell which is burning at below the sustaining level
+
+        # F.extinguish(E,F) Extinguish any cell which is burning at below the sustaining level
         self.flame_array[   (self.flame_array < globals.get("MIN_FLAME")) | (self.energy_array == 0) ] = 0
-        # Flame brightness depends on how much energy is available
-        self.flame_array = np.where(self.flame_array > 0, self.energy_array + (self.flame_array - self.energy_array) * math.exp(-1.0/globals.get("FLAME_INERTIA") * elapsed_s), self.flame_array)
-        # Energy flows in at a linear rate
-        self.energy_array[self.enabled_array] = np.minimum(1, self.energy_array[self.enabled_array] + globals.get("SUPPLY/S") * elapsed_s) 
+
+        # F tends to E      Flame brightness depends on how much energy is available
+        self.flame_array = np.where(self.flame_array > 0, self.energy_array + (self.flame_array - self.energy_array) * math.exp(-1.0/globals.get("FLAME_INERTIA") * delta_s), self.flame_array)
+
+        # E tends to gauss(E)  Energy spreads out (so a flame can steal it from its' neighbours)
+        # self.energy_array = np.maximum(0, 
+
+        # E -= F            Flame consumes energy according to how bright it's burning
+        self.energy_array = np.maximum(0, self.energy_array - self.flame_array * globals.get("FLAME_CONSUME") * delta_s) 
+
+        # E += supply       Energy flows in at a linear rate
+        self.energy_array[self.enabled_array] = np.minimum(1, self.energy_array[self.enabled_array] + globals.get("SUPPLY/S") * delta_s) 
 
     def shift(self, dx, dy):
         def scroll(arr):
@@ -97,12 +105,13 @@ class Cells: # Maintain a grid of cells of state
     def shift(self,dx,dy):
         self.state.shift(dx,dy)
 
-    def render(self, show_illumination, probes):
+    def render(self, show_only, probes):
         # Cells
         white_int = 1 + 256 + 256*256
         S = self.state
-        if show_illumination:
-            i = np.clip((S.illumination_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
+        if show_only != "":
+            a = [S.energy_array, S.flame_array, S.illumination_array]["EFI".index(show_only)]
+            i = np.clip((a * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
             pygame.surfarray.blit_array(self.surface, i * white_int)
         else:
             e = np.clip((S.energy_array * 256).astype(int),0,255) # turn into a byte (and in particular, chop off any pesky fraction!))
@@ -149,8 +158,8 @@ class Cells: # Maintain a grid of cells of state
         if S.enabled_array[cell_xy] and (S.energy_array[cell_xy] >= globals.get("MIN_STRIKE")):
             S.flame_array[cell_xy] = globals.get("STRIKE_LEVEL")
 
-    def update(self, elapsed_s):
-        self.state.update(elapsed_s)
+    def update(self, delta_s):
+        self.state.update(delta_s)
 
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
@@ -163,7 +172,7 @@ class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
         self.ybot = self.xy[1] + self.size[1]
         self.set_timescale_s(1)
         self.retrig = False # When we get to right of screen, restart?
-        self.trig_time = None # The time at the left of the pane. None for "not triggered".
+        self.time_since_trig = None # Elapsed time since trigger. None for "not triggered".
         self.energy_points = [] # (t,val)
         self.illumination_points = [] # (t,val)
         self.flame_points = [] # (t,val)
@@ -201,12 +210,12 @@ class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
         if self.focus:
             pygame.draw.rect(self.screen, (255,255,255), (self.xy[0]+1, self.xy[1]+1, self.size[0]-2, self.size[1]-2), width=1)
 
-    def update(self, cells):
-        if self.trig_time is None:
+    def update(self, delta_s, cells):
+        if self.time_since_trig is None:
             return
-        T = time.time() - self.trig_time
-        x = self.xy[0] + T * self.scale[0]
-        if T < self.timescale_s:
+        self.time_since_trig += delta_s
+        x = self.xy[0] + self.time_since_trig * self.scale[0]
+        if self.time_since_trig < self.timescale_s:
             for probe in self.probes:
                 S = cells.state
                 probe["energy_chart"].append( (x, self.ybot - S.energy_array[probe["xy"]] * self.scale[1]) )
@@ -221,7 +230,7 @@ class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
             p["energy_chart"] = []
             p["flame_chart"] = []
             p["illumination_chart"] = []
-        self.trig_time = time.time()
+        self.time_since_trig = 0
 
     def add_probe(self, cell_xy):
         self.probes.append({"xy":cell_xy, "energy_chart":[], "flame_chart":[], "illumination_chart":[]})
@@ -247,8 +256,8 @@ class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
     def is_click_within(self, xy):
         return (self.xy[0] <= xy[0] < self.xy[0]+self.size[0]) and (self.xy[1] <= xy[1] < self.xy[1]+self.size[1])
 
-class Console: # Maintain a text console
-    def __init__(self,screen, xy,size):
+class Console: # Maintain a text console including an input line
+    def __init__(self,screen, xy,size, execute):
         self.screen = screen
         self.xy = xy
         self.size = size
@@ -257,35 +266,55 @@ class Console: # Maintain a text console
         self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16) 
         self.chars_wide = int(size[0] / self.char_width_pixels)
         self.chars_high = int(size[1] / self.char_height_pixels) 
-        self.strings = ["" for i in range(self.chars_high)] # A string for every row
+        self.input = ""
+        self.strings = ["" for i in range(self.chars_high-1)] # A string for every row, going top down, minus one for the input line
         self.fps_smoothing = 0
         self.focus = False
+        self.execute = execute
 
     def scroll(self):
-        self.strings = self.strings[1:]
-        self.strings.append("")
+        self.strings = self.strings[1:] + [""]
 
-    def add_char(self, c):
+    def add_console_char(self, c):
         if c == chr(10):
             self.scroll()
         else:
             if len(self.strings[-1]) >= self.chars_wide:
                 self.scroll()
             self.strings[-1] += c
-        sys.stderr.write(c)
+
+    def add_input_char(self, c):
+        if c==chr(8): # Del
+            self.input = self.input[0:-1]
+        elif c==chr(13): # Enter
+            self.add_console_char(">")
+            for x in self.input:
+                self.add_console_char(x)
+            self.scroll()
+            self.execute(self.input)
+            self.input = ""
+        else:
+            self.input = self.input + c
 
     def write(self, s): # Called by stdout (with chr(10) for a newline)
         for c in s:
-            self.add_char(c)
+            self.add_console_char(c)
 
     def flush(self): # Necessary method to support stdout redirection
         pass
 
-    def render(self, s_per_frame):
-        for i in range(len(self.strings)):
-            self.screen.blit(self.font.render(self.strings[i],True,(255,255,255)), (self.xy[0], self.xy[1] + i * self.char_height_pixels))
+    def render(self, s_per_frame, is_paused):
+        render_strings = self.strings + [">" + self.input]
+        for i in range(len(render_strings)):
+            self.screen.blit(self.font.render(render_strings[i],True,(255,255,255)), (self.xy[0], self.xy[1] + i * self.char_height_pixels))
         self.fps_smoothing = self.fps_smoothing * 0.99 + s_per_frame * 0.01 # Otherwise it jitters so much you can't read it
-        self.screen.blit(self.font.render(str(int(1/self.fps_smoothing)) + "fps", True, (64,64,0)), (self.xy[0]+self.size[0] - 70, self.xy[1]) )
+        if is_paused:
+            s = "PAUSED"
+            colour = (255,255,255)
+        else:
+            s = str(int(1/self.fps_smoothing)) + "fps"
+            colour = (64,64,0)
+        self.screen.blit(self.font.render(s, True, colour), (self.xy[0]+self.size[0] - 70, self.xy[1]) )
         if self.focus:
             pygame.draw.rect(self.screen, (255,255,255), (self.xy[0]+1, self.xy[1]+1, self.size[0]-2, self.size[1]-2), width=1)
 
@@ -309,13 +338,17 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
         self.vars[self.selected_key()] = value
     def get_selected(self):
         return self.vars[self.selected_key()]
-    def save(self, filename, cells, chart):
+    def list_files(self):
+        for f in sorted(glob.glob("*.json")):
+            print(f,"",end="")
+        print()
+    def save_file(self, filename, cells, chart):
         obj = { "enabled" : cells.state.enabled_array.tolist(), "energy" : cells.state.energy_array.tolist(), "flame" : cells.state.flame_array.tolist(),
                "probes" : chart.probes,
                "vars" : self.vars}
         with open(filename + self.suffix,"wt") as f:
             json.dump(obj, f, indent=4)
-    def load(self, filename, cells, chart):
+    def load_file(self, filename, cells, chart):
         try:
             with open(filename + self.suffix,"rt") as f:
                 obj = json.load(f)
@@ -334,6 +367,17 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
         for i in range(len(l)):
             print(l[i], self.vars[l[i]], ["","<-"][i==self.selected])
 
+def command_execute(s):
+    words = s.strip().split(" ")
+    if words[0]=="ls":
+        globals.list_files()
+    elif words[0]=="save":
+        globals.save_file(words[1], cells, chart)
+    elif words[0]=="load":
+        globals.load_file(words[1], cells, chart)
+    else:
+        print("Unrecognised command '"+s+"'")
+
 globals = Globals()
 
 # Dynamics
@@ -348,7 +392,7 @@ globals.set("SUPPLY/S", 1.0) # constant energy flow in
 
 # Create the screen
 pygame.init()
-pygame.key.set_repeat(1000,100)
+pygame.key.set_repeat(500,100)
 displays = pygame.display.get_desktop_sizes()
 display = 0
 if len(sys.argv) > 1:
@@ -358,7 +402,8 @@ screen = pygame.display.set_mode((screen_width, screen_height), display=display,
 pygame.display.set_caption('Neuron 2025')
 
 cells = Cells(screen, (0,0), (screen_height, screen_height))
-console = Console(screen, (screen_height, int(screen_height/2)), (screen_width - screen_height, screen_height-screen_height/2))
+cells.focus = True
+console = Console(screen, (screen_height, int(screen_height/2)), (screen_width - screen_height, screen_height-screen_height/2), command_execute)
 sys.stdout = console
 print("Hello everyone")
 
@@ -368,10 +413,10 @@ chart = Chart(screen, (screen_height, 0), (screen_width - screen_height, int(scr
 running = True
 paused = False
 modify_probe = ""
-show_illumination = False
+show_only = ""
 dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
 this_frame_start = time.time()
-globals.load("recent", cells, chart)
+globals.load_file("recent", cells, chart)
 while running:
     last_frame_start = this_frame_start
     this_frame_start = time.time()
@@ -413,86 +458,101 @@ while running:
                 (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
                 if hit:
                     cells.set_enabled( (grid_x,grid_y), dragging_state)
+        elif event.type == pygame.TEXTINPUT: # Easier than keypresses for text input (capitalisation etc.)
+            if console.focus:
+                console.add_input_char(event.text)
         elif event.type == pygame.KEYDOWN:
             if event.key == 27: # ESC
                 running = False
-            elif event.key == ord(' '):
-                paused = True
-                do_step = True
-            elif event.key >= ord('0') and event.key <= ord('9'):
-                console.add_char(chr(event.key))
-            elif event.key == ord('-'): # Zoom out, i.e. make timescale larger
-                chart.set_timescale_s(chart.timescale_s * 1.25)
-            elif event.key == ord("="): # Same as "+" so zoom in
-                chart.set_timescale_s(chart.timescale_s / 1.25)
-            elif event.key == ord('a'):
-                modify_probe = "add"
             elif (event.key == ord('c')) and (event.mod & pygame.KMOD_CTRL): # ^C
                 running = False
-            elif event.key == ord('c'):   # Clear entire array
-                cells.reset(False)
-            elif event.key == ord('d'):
-                modify_probe = "delete"
-            elif event.key == ord('f'):   # Fill entire array
-                cells.reset(True)
-            elif event.key == ord('i'):
-                show_illumination = not show_illumination
-                print("Show Illumination=",show_illumination)
-            elif event.key == ord('l'):
-                globals.list_files()
-                filename = input("Enter filename to load: ")
-                if filename:
-                    globals.load(filename, cells, chart)
-            elif event.key == ord('p'):
-                paused = not paused
-            elif event.key == ord('r'):
-                for i in range(int(cells.grid_size[0] * cells.grid_size[1] / 10)) : # Ignite a 1/10th of random pixels
-                    cells.set_light( (random.randrange(cells.grid_size[0]), random.randrange(cells.grid_size[1])) )
-            elif event.key == ord('s'):
-                globals.list_files()
-                filename = input("Enter filename to save: ")
-                if filename:
-                    globals.save(filename, cells, chart)
-            elif event.key == ord('t'):
-                chart.retrig = not chart.retrig
-            elif event.key == ord('v'):
-                globals.list_vars()
-            elif event.key == ord('z'):   # Zero (deactivate) entire array
-                cells.zero()
-            elif (event.mod & pygame.KMOD_SHIFT) and (event.key in [pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT]):
-                dx = (event.key==pygame.K_RIGHT) - (event.key==pygame.K_LEFT)
-                dy = (event.key==pygame.K_DOWN) - (event.key==pygame.K_UP)
-                cells.shift(dx,dy)
-                chart.shift_probes(dx,dy,cells)
-            elif event.key == pygame.K_UP:
-                globals.selected -= 1
-                globals.selected = globals.selected % len(globals.vars)
-                globals.list_vars()
-            elif event.key == pygame.K_DOWN:
-                globals.selected += 1
-                globals.selected = globals.selected % len(globals.vars)
-                globals.list_vars()
-            elif event.key == pygame.K_LEFT:
-                globals.set_selected(globals.get_selected() / 1.05)
-                globals.list_vars()
-            elif event.key == pygame.K_RIGHT:
-                globals.set_selected(globals.get_selected() * 1.05)
-                globals.list_vars()
-        else:
-            pass
+            elif event.key == 9: # TAB
+                if cells.focus:
+                    cells.focus = False
+                    chart.focus = True
+                elif chart.focus:
+                    chart.focus = False
+                    console.focus = True
+                else:
+                    console.focus = False
+                    cells.focus = True
+            else:
+                if console.focus:
+                    if event.key in [13,8]: # These characters don't arrive from TEXTINPUT
+                        console.add_input_char(chr(event.key))
+                if chart.focus:
+                    if event.key == ord('-'): # Zoom out, i.e. make timescale larger
+                        chart.set_timescale_s(chart.timescale_s * 1.25)
+                    elif event.key == ord("="): # Same as "+" so zoom in
+                        chart.set_timescale_s(chart.timescale_s / 1.25)
+                    elif event.key == ord('t'):
+                        chart.retrig = not chart.retrig
+                if cells.focus:
+                    if event.key == ord(' '):
+                        paused = True
+                        do_step = True
+                    elif event.key == ord('a'):
+                        modify_probe = "add"
+                    elif event.key == ord('c'):   # Clear entire array
+                        cells.reset(False)
+                    elif event.key == ord('d'):
+                        modify_probe = "delete"
+                    elif event.key == ord('f'):   # Fill entire array
+                        cells.reset(True)
+                    elif event.key == ord('e'):
+                        show_only = "" if show_only== "E" else "E"
+                    elif event.key == ord('i'):
+                        show_only = "" if show_only== "I" else "I"
+                    elif event.key == ord('p'):
+                        paused = not paused
+                    elif event.key == ord('r'):
+                        for i in range(int(cells.grid_size[0] * cells.grid_size[1] / 10)) : # Ignite a 1/10th of random pixels
+                            cells.set_light( (random.randrange(cells.grid_size[0]), random.randrange(cells.grid_size[1])) )
+                    elif event.key == ord('z'):   # Zero (deactivate) entire array
+                        cells.zero()
+                    elif (event.mod & pygame.KMOD_SHIFT) and (event.key in [pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT]):
+                        dx = (event.key==pygame.K_RIGHT) - (event.key==pygame.K_LEFT)
+                        dy = (event.key==pygame.K_DOWN) - (event.key==pygame.K_UP)
+                        cells.shift(dx,dy)
+                        chart.shift_probes(dx,dy,cells)
+                    elif event.key == pygame.K_UP:
+                        globals.selected -= 1
+                        globals.selected = globals.selected % len(globals.vars)
+                        globals.list_vars()
+                    elif event.key == pygame.K_DOWN:
+                        globals.selected += 1
+                        globals.selected = globals.selected % len(globals.vars)
+                        globals.list_vars()
+                    elif event.key == pygame.K_LEFT:
+                        globals.set_selected(globals.get_selected() / 1.05)
+                        globals.list_vars()
+                    elif event.key == pygame.K_RIGHT:
+                        globals.set_selected(globals.get_selected() * 1.05)
+                        globals.list_vars()
 
-    # Update the display with the new pixel array
+    # Generally we pass "delta real time" into simulation from frame to frame, so that it is not affected by frame-rate (i.e. so simuluation unfolds in lock-step with real time)
+    # If we see a massive delta for some reason (garbage-collection or some other disruption to our machine), we don't want to ask the simulation to leap TOO far into the future (because that will likely cause errors)
+    # So we limit the maximum delta (so simulation time falls slightly behind real-time)
+    delta = this_frame_start - last_frame_start 
+    if delta > 1/50.0: 
+        # print("ignoring slow fps",1/delta)
+        delta = 1/50.0
+
+    # Update display
     screen.fill((0,0,0))
-    console.render(this_frame_start-last_frame_start)
+    console.render(delta, paused)
     chart.render()
-    cells.render(show_illumination, chart.probes)
+    cells.render(show_only, chart.probes)
     pygame.display.flip()
 
+    #if(time.time() % 5 < 0.05):
+    #    print(time.time())
+
     if (not paused) or do_step:
-        cells.update(this_frame_start - last_frame_start)
-        chart.update(cells)
+        cells.update(delta)
+        chart.update(delta, cells)
 
 # Quit pygame
-globals.save("recent", cells, chart)
+globals.save_file("recent", cells, chart)
 pygame.quit()
 

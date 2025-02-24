@@ -102,17 +102,14 @@ class State: # A 2D array of excitable media. This is the entire model of the be
             fg_end_x = fg_start_x + (end_x - start_x)
                                                                             
             # Copy the overlapping part of foreground onto background
-            print("Copying into",start_y,end_y,start_x,end_x,"from",fg_start_y,fg_end_y,fg_start_x,fg_end_x)
-            print("Before copy, pixels lit in background",np.count_nonzero(background),"foreground",np.count_nonzero(foreground))
             background[start_y:end_y, start_x:end_x] = foreground[fg_start_y:fg_end_y, fg_start_x:fg_end_x]
-            print("After copy, pixels lit in background",np.count_nonzero(background),"foreground",np.count_nonzero(foreground))
         paste_it(source_state.enabled_array, self.enabled_array)
         paste_it(source_state.energy_array, self.energy_array)
         paste_it(source_state.flame_array, self.flame_array)
         paste_it(source_state.illumination_array, self.illumination_array)
 
 
-class Cells: # Maintain a grid of cells of stat
+class Cells: # Maintain and display State
     def __init__(self, screen, screen_xy, screen_size, grid_size):
         self.screen = screen
         self.xy = screen_xy
@@ -122,15 +119,13 @@ class Cells: # Maintain a grid of cells of stat
         self.state = None
         self.set_grid_size(grid_size)
 
-    def set_grid_size(self, grid_size): # Can be called again later to change grid size
+    def set_grid_size(self, grid_size): # Can be called multiple times, to change grid size without losing state
         # Cells
         if self.state is None:
-            print("Creating grid of size",grid_size)
             self.grid_size = grid_size
             self.state = State(self.grid_size)
             self.reset(False)
         else: # There's a previous state to copy
-            print("Changing grid size from",self.grid_size,"to",grid_size)
             old_state = copy.deepcopy(self.state)
             self.grid_size = grid_size
             self.state = State(self.grid_size)
@@ -141,7 +136,12 @@ class Cells: # Maintain a grid of cells of stat
         self.surface = pygame.Surface(self.grid_size) # One pixel for every cell (then gets upscaled to fit screen)
 
     def increase_grid_size(self):
-        self.set_grid_size( (self.grid_size[0] * 2, self.grid_size[1] * 2) )
+        if self.grid_size[0] < 1024:
+            self.set_grid_size( (self.grid_size[0] * 2, self.grid_size[1] * 2) )
+
+    def decrease_grid_size(self):
+        if self.grid_size[0] > 1:
+            self.set_grid_size( (int(self.grid_size[0] / 2), int(self.grid_size[1] / 2)) )
 
     def reset(self, state):
         self.state.set_all_enableds(state)
@@ -282,6 +282,9 @@ class Chart: # Maintain a chart (an oscilloscope which probes the cell array)
         self.time_since_trig = 0
 
     def add_probe(self, cell_xy):
+        for p in self.probes:
+            if p["xy"] == cell_xy:
+                return
         self.probes.append({"xy":cell_xy, "energy_chart":[], "flame_chart":[], "illumination_chart":[]})
 
     def delete_probe(self, cell_xy):
@@ -357,7 +360,7 @@ class Console: # Maintain a text console including an input line
         render_strings = self.strings + [">" + self.input]
         for i in range(len(render_strings)):
             self.screen.blit(self.font.render(render_strings[i],True,(255,255,255)), (self.xy[0], self.xy[1] + i * self.char_height_pixels))
-        self.fps_smoothing = self.fps_smoothing * 0.99 + s_per_frame * 0.01 # Otherwise it jitters so much you can't read it
+        self.fps_smoothing = self.fps_smoothing * 0.9 + s_per_frame * 0.1 # Otherwise it jitters so much you can't read it
         if is_paused:
             s = "PAUSED"
             colour = (255,255,255)
@@ -390,7 +393,7 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
         return self.vars[self.selected_key()]
     def list_files(self):
         for f in sorted(glob.glob("*.json")):
-            print(f,"",end="")
+            print(f[:-5],"",end="")
         print()
     def save_file(self, filename, cells, chart):
         obj = { "enabled" : cells.state.enabled_array.tolist(), "energy" : cells.state.energy_array.tolist(), "flame" : cells.state.flame_array.tolist(),
@@ -403,7 +406,6 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
             with open(filename + self.suffix,"rt") as f:
                 obj = json.load(f)
             x,y = len(obj["enabled"]),len(obj["enabled"][0])
-            print("Loading",filename,"of size",(x,y))
             cells.set_grid_size( (x,y) )
             cells.state.enabled_array = np.array(obj["enabled"])
             cells.state.energy_array = np.array(obj["energy"])
@@ -422,7 +424,9 @@ class Globals:  # Maintain global variables, and deal with saving & loading all 
 
 def command_execute(s):
     words = s.strip().split(" ")
-    if words[0]=="ls":
+    if words[0]=="":
+        pass
+    elif words[0]=="ls":
         globals.list_files()
     elif words[0]=="save":
         globals.save_file(words[1], cells, chart)
@@ -465,7 +469,6 @@ chart = Chart(screen, (screen_height, 0), (screen_width - screen_height, int(scr
 # Main loop
 running = True
 paused = False
-modify_probe = ""
 show_only = ""
 dragging_state = False # Whether we are clearing or setting neurons as we drag (based on state when first clicked)
 this_frame_start = time.time()
@@ -475,10 +478,12 @@ while running:
     this_frame_start = time.time()
     do_step = False
     for event in pygame.event.get():
+        P = pygame.mouse.get_pos()
+        HIT, grid_x, grid_y = cells.find_cell(pygame.mouse.get_pos())
+        C = (grid_x, grid_y)
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            P = pygame.mouse.get_pos()
             if chart.is_click_within(P):
                 chart.focus = True
                 cells.focus = False
@@ -491,26 +496,17 @@ while running:
                 console.focus = True
                 cells.focus = False
                 chart.focus = False
-            (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
-            if hit:
-                if modify_probe=="add":
-                    chart.add_probe( (grid_x, grid_y) )
-                    modify_probe = ""
-                elif modify_probe=="delete":
-                    chart.delete_probe( (grid_x, grid_y) )
-                    modify_probe = ""
+            if HIT:
+                if event.button==1:
+                    cells.set_enabled(C, not cells.get_enabled(C))
+                    dragging_state = cells.get_enabled(C)
                 else:
-                    if event.button==1:
-                        cells.set_enabled( (grid_x,grid_y), not cells.get_enabled((grid_x, grid_y)))
-                        dragging_state = cells.get_enabled((grid_x, grid_y))
-                    else:
-                        cells.set_light( (grid_x, grid_y) )
-                        chart.trig()
+                    cells.set_light(C)
+                    chart.trig()
         elif event.type == pygame.MOUSEMOTION:
             if event.buttons[0]:
-                (hit, grid_x, grid_y) = cells.find_cell(pygame.mouse.get_pos())
-                if hit:
-                    cells.set_enabled( (grid_x,grid_y), dragging_state)
+                if HIT:
+                    cells.set_enabled( C, dragging_state)
         elif event.type == pygame.TEXTINPUT: # Easier than keypresses for text input (capitalisation etc.)
             if console.focus:
                 console.add_input_char(event.text)
@@ -542,18 +538,18 @@ while running:
                         chart.retrig = not chart.retrig
                 if cells.focus:
                     if event.key == ord("="): # Same as "+" so zoom in
-                        pass
+                        cells.decrease_grid_size()
                     elif event.key == ord("-"):
                         cells.increase_grid_size() # Zooming out means making the grid bigger
                     elif event.key == ord(' '):
                         paused = True
                         do_step = True
                     elif event.key == ord('a'):
-                        modify_probe = "add"
+                        chart.add_probe(C)
+                    elif event.key == ord('d'):
+                        chart.delete_probe(C)
                     elif event.key == ord('c'):   # Clear entire array
                         cells.reset(False)
-                    elif event.key == ord('d'):
-                        modify_probe = "delete"
                     elif event.key == ord('f'):   # Fill entire array
                         cells.reset(True)
                     elif event.key == ord('e'):

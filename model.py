@@ -140,6 +140,45 @@ class State:
         self.flame_array = scroll(self.flame_array)
         self.illumination_array = scroll(self.illumination_array)
 
+    def split_shift(self, dx: int, dy: int, cursor_xy: tuple[int, int]) -> None:
+        cursor_x, cursor_y = cursor_xy
+
+        def shift_x(arr: np.ndarray) -> np.ndarray:
+            new_arr = arr.copy()
+            if dx > 0:
+                if cursor_x + 1 < arr.shape[0]:
+                    new_arr[cursor_x + 1 :, :] = arr[cursor_x:-1, :]
+                new_arr[cursor_x, :] = 0
+            elif dx < 0:
+                if cursor_x > 0:
+                    new_arr[:cursor_x, :] = arr[1 : cursor_x + 1, :]
+                new_arr[cursor_x, :] = 0
+            return new_arr
+
+        def shift_y(arr: np.ndarray) -> np.ndarray:
+            new_arr = arr.copy()
+            if dy > 0:
+                if cursor_y + 1 < arr.shape[1]:
+                    new_arr[:, cursor_y + 1 :] = arr[:, cursor_y:-1]
+                new_arr[:, cursor_y] = 0
+            elif dy < 0:
+                if cursor_y > 0:
+                    new_arr[:, :cursor_y] = arr[:, 1 : cursor_y + 1]
+                new_arr[:, cursor_y] = 0
+            return new_arr
+
+        if dx != 0:
+            self.enabled_array = shift_x(self.enabled_array)
+            self.energy_array = shift_x(self.energy_array)
+            self.flame_array = shift_x(self.flame_array)
+            self.illumination_array = shift_x(self.illumination_array)
+
+        if dy != 0:
+            self.enabled_array = shift_y(self.enabled_array)
+            self.energy_array = shift_y(self.energy_array)
+            self.flame_array = shift_y(self.flame_array)
+            self.illumination_array = shift_y(self.illumination_array)
+
     def paste(self, source_state: "State") -> None:
         def paste_array(foreground: np.ndarray, background: np.ndarray) -> None:
             bg_h, bg_w = background.shape
@@ -163,6 +202,9 @@ class State:
         paste_array(source_state.energy_array, self.energy_array)
         paste_array(source_state.flame_array, self.flame_array)
         paste_array(source_state.illumination_array, self.illumination_array)
+
+    def clone(self) -> "State":
+        return copy.deepcopy(self)
 
 
 def resized_state(source_state: State, new_grid_size: tuple[int, int]) -> State:

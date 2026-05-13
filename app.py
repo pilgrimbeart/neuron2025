@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import random
 import sys
 import time
+from dataclasses import dataclass
 
 import pygame
 
@@ -11,6 +13,15 @@ from model import SimulationConfig, State, resized_state
 from persistence import list_snapshot_names, load_snapshot, save_snapshot
 from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
+
+
+@dataclass
+class UndoSnapshot:
+    state: State
+    probes: list[dict]
+    config_vars: dict[str, float]
+    config_selected: int
+    show_only: str
 
 
 class SimulatorApp:
@@ -38,6 +49,7 @@ class SimulatorApp:
         self.dragging_state = False
         self.focus_name = "cells"
         self.last_mouse_pos = (0, 0)
+        self.undo_stack: list[UndoSnapshot] = []
 
         self.cells_panel = CellsPanel(self.screen, (0, 0), (self.screen_height, self.screen_height), self.state.grid_size)
         self.chart_panel = ChartPanel(self.screen, (self.screen_height, 0), (self.screen_width - self.screen_height, int(self.screen_height / 2)))
@@ -84,6 +96,33 @@ class SimulatorApp:
     def toggle_show_only(self, mode: str) -> None:
         self.show_only = "" if self.show_only == mode else mode
 
+    def make_undo_snapshot(self) -> UndoSnapshot:
+        return UndoSnapshot(
+            state=self.state.clone(),
+            probes=copy.deepcopy(self.chart_panel.probes),
+            config_vars=copy.deepcopy(self.config.vars),
+            config_selected=self.config.selected,
+            show_only=self.show_only,
+        )
+
+    def push_undo_state(self) -> None:
+        self.undo_stack.append(self.make_undo_snapshot())
+
+    def restore_undo_snapshot(self, snapshot: UndoSnapshot) -> None:
+        self.state = snapshot.state
+        self.cells_panel.set_grid_size(self.state.grid_size)
+        self.chart_panel.set_probes(copy.deepcopy(snapshot.probes))
+        self.config.vars = copy.deepcopy(snapshot.config_vars)
+        self.config.selected = snapshot.config_selected
+        self.show_only = snapshot.show_only
+
+    def undo(self) -> None:
+        if not self.undo_stack:
+            print("Nothing to undo")
+            return
+        snapshot = self.undo_stack.pop()
+        self.restore_undo_snapshot(snapshot)
+
     def current_cell(self) -> tuple[bool, tuple[int, int]]:
         hit, grid_x, grid_y = self.cells_panel.find_cell(self.last_mouse_pos)
         return hit, (grid_x, grid_y)
@@ -103,22 +142,27 @@ class SimulatorApp:
     def add_probe_under_mouse(self) -> None:
         hit, cell_xy = self.current_cell()
         if hit:
+            self.push_undo_state()
             self.chart_panel.add_probe(cell_xy)
 
     def delete_probe_under_mouse(self) -> None:
         hit, cell_xy = self.current_cell()
         if hit:
+            self.push_undo_state()
             self.chart_panel.delete_probe(cell_xy)
 
     def clear_enabled(self) -> None:
+        self.push_undo_state()
         self.state.set_all_enableds(False)
-        self.zero_activity()
+        self.state.reset_energy_and_flame()
 
     def fill_enabled(self) -> None:
+        self.push_undo_state()
         self.state.set_all_enableds(True)
-        self.zero_activity()
+        self.state.reset_energy_and_flame()
 
     def zero_activity(self) -> None:
+        self.push_undo_state()
         self.state.reset_energy_and_flame()
 
     def increase_grid_size(self) -> None:
@@ -130,18 +174,49 @@ class SimulatorApp:
             self.resize_grid((int(self.state.grid_size[0] / 2), int(self.state.grid_size[1] / 2)))
 
     def resize_grid(self, grid_size: tuple[int, int]) -> None:
+        self.push_undo_state()
         self.state = resized_state(self.state, grid_size)
         self.cells_panel.set_grid_size(grid_size)
         self.chart_panel.shift_probes(0, 0, self.state)
 
     def random_strike(self) -> None:
+        self.push_undo_state()
         count = int(self.state.grid_size[0] * self.state.grid_size[1] / 10)
         for _ in range(count):
             self.strike_cell((random.randrange(self.state.grid_size[0]), random.randrange(self.state.grid_size[1])))
 
     def shift_state(self, dx: int, dy: int) -> None:
+        self.push_undo_state()
         self.state.shift(dx, dy)
         self.chart_panel.shift_probes(dx, dy, self.state)
+
+    def split_shift_state(self, dx: int, dy: int) -> None:
+        hit, cell_xy = self.current_cell()
+        if not hit:
+            return
+        self.push_undo_state()
+        self.state.split_shift(dx, dy, cell_xy)
+        self.shift_split_probes(dx, dy, cell_xy)
+
+    def shift_split_probes(self, dx: int, dy: int, cursor_xy: tuple[int, int]) -> None:
+        cursor_x, cursor_y = cursor_xy
+        updated = []
+        for probe in self.chart_panel.probes:
+            probe = copy.deepcopy(probe)
+            probe_x, probe_y = probe["xy"]
+            if dx > 0 and probe_x >= cursor_x:
+                probe_x += 1
+            elif dx < 0 and probe_x <= cursor_x:
+                probe_x -= 1
+            elif dy > 0 and probe_y >= cursor_y:
+                probe_y += 1
+            elif dy < 0 and probe_y <= cursor_y:
+                probe_y -= 1
+
+            if 0 <= probe_x < self.state.grid_size[0] and 0 <= probe_y < self.state.grid_size[1]:
+                probe["xy"] = (probe_x, probe_y)
+                updated.append(probe)
+        self.chart_panel.set_probes(updated)
 
     def select_previous_var(self) -> None:
         self.config.select_previous()
@@ -152,6 +227,7 @@ class SimulatorApp:
         self.print_var_list()
 
     def scale_selected_var(self, factor: float) -> None:
+        self.push_undo_state()
         self.config.scale_selected(factor)
         self.print_var_list()
 
@@ -196,6 +272,7 @@ class SimulatorApp:
 
     def load_snapshot(self, name: str) -> None:
         state, probes, vars_dict = load_snapshot(name)
+        self.push_undo_state()
         self.state = state
         self.cells_panel.set_grid_size(self.state.grid_size)
         self.chart_panel.set_probes(probes)
@@ -236,9 +313,11 @@ class SimulatorApp:
             return
 
         if event.button == 1:
+            self.push_undo_state()
             self.set_enabled(cell_xy, not self.get_enabled(cell_xy))
             self.dragging_state = self.get_enabled(cell_xy)
         else:
+            self.push_undo_state()
             self.strike_cell(cell_xy)
             self.chart_panel.trig()
 

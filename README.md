@@ -95,6 +95,7 @@ The grid view can show the combined state or isolate one field:
 - `Tab`: cycle focus between grid, chart, and console.
 - `Esc` or `Ctrl+C`: quit.
 - `h` or `?`: toggle the help overlay.
+- `u` or `U`: undo the last edit. Undo depth is unlimited.
 - `v`: start or stop MP4 recording of the whole window into `videos/`.
 
 ### Keyboard While Grid Has Focus
@@ -108,6 +109,7 @@ The grid view can show the combined state or isolate one field:
 - `a`: add a chart probe at the cell under the mouse.
 - `d`: delete a chart probe at the cell under the mouse.
 - `Shift` + arrow keys: shift the whole pattern and its probes.
+- `Ctrl` + `Shift` + arrow keys: split at the cursor by inserting a blank row or column and moving only the cells on that side of the cursor.
 - `=`: zoom in by reducing grid size.
 - `-`: zoom out by increasing grid size.
 - `e`: toggle energy-only view.

@@ -34,12 +34,20 @@ def _shift_key(key: int) -> Callable[[pygame.event.Event], bool]:
     return lambda event: event.key == key and bool(event.mod & pygame.KMOD_SHIFT)
 
 
+def _ctrl_shift_key(key: int) -> Callable[[pygame.event.Event], bool]:
+    return lambda event: event.key == key and bool(event.mod & pygame.KMOD_SHIFT) and bool(event.mod & pygame.KMOD_CTRL)
+
+
 def _ctrl_key(key: int) -> Callable[[pygame.event.Event], bool]:
     return lambda event: event.key == key and bool(event.mod & pygame.KMOD_CTRL)
 
 
 def _shift_char(key: int, char: str) -> Callable[[pygame.event.Event], bool]:
     return lambda event: event.key == key and bool(event.mod & pygame.KMOD_SHIFT) and getattr(event, "unicode", "") == char
+
+
+def _letter_key(key: int) -> Callable[[pygame.event.Event], bool]:
+    return lambda event: event.key == key and not (event.mod & (pygame.KMOD_CTRL | pygame.KMOD_ALT | pygame.KMOD_META))
 
 
 KEY_ACTIONS = [
@@ -49,6 +57,7 @@ KEY_ACTIONS = [
     KeyAction("Global", None, "h", "Toggle help overlay", _plain_key(ord("h")), lambda app: app.toggle_help()),
     KeyAction("Global", None, "?", "Toggle help overlay", _shift_char(pygame.K_SLASH, "?"), lambda app: app.toggle_help()),
     KeyAction("Global", None, "v", "Start/stop MPEG recording", _plain_key(ord("v")), lambda app: app.toggle_recording()),
+    KeyAction("Global", None, "U", "Undo", _letter_key(ord("u")), lambda app: app.undo()),
     KeyAction("Chart", "chart", "-", "Zoom out in time", _plain_key(ord("-")), lambda app: app.chart_zoom_out()),
     KeyAction("Chart", "chart", "=", "Zoom in in time", _plain_key(ord("=")), lambda app: app.chart_zoom_in()),
     KeyAction("Chart", "chart", "t", "Toggle chart retrigger", _plain_key(ord("t")), lambda app: app.toggle_chart_retrigger()),
@@ -64,10 +73,14 @@ KEY_ACTIONS = [
     KeyAction("Grid", "cells", "p", "Pause/resume", _plain_key(ord("p")), lambda app: app.toggle_pause()),
     KeyAction("Grid", "cells", "r", "Randomly strike cells", _plain_key(ord("r")), lambda app: app.random_strike()),
     KeyAction("Grid", "cells", "z", "Zero energy and flame", _plain_key(ord("z")), lambda app: app.zero_activity()),
-    KeyAction("Grid", "cells", "Shift+Up", "Shift pattern up", _shift_key(pygame.K_UP), lambda app: app.shift_state(0, -1)),
-    KeyAction("Grid", "cells", "Shift+Down", "Shift pattern down", _shift_key(pygame.K_DOWN), lambda app: app.shift_state(0, 1)),
-    KeyAction("Grid", "cells", "Shift+Left", "Shift pattern left", _shift_key(pygame.K_LEFT), lambda app: app.shift_state(-1, 0)),
-    KeyAction("Grid", "cells", "Shift+Right", "Shift pattern right", _shift_key(pygame.K_RIGHT), lambda app: app.shift_state(1, 0)),
+    KeyAction("Grid", "cells", "Ctrl+Shift+Up", "Split at cursor and move upper cells up", _ctrl_shift_key(pygame.K_UP), lambda app: app.split_shift_state(0, -1)),
+    KeyAction("Grid", "cells", "Ctrl+Shift+Down", "Split at cursor and move lower cells down", _ctrl_shift_key(pygame.K_DOWN), lambda app: app.split_shift_state(0, 1)),
+    KeyAction("Grid", "cells", "Ctrl+Shift+Left", "Split at cursor and move left cells left", _ctrl_shift_key(pygame.K_LEFT), lambda app: app.split_shift_state(-1, 0)),
+    KeyAction("Grid", "cells", "Ctrl+Shift+Right", "Split at cursor and move right cells right", _ctrl_shift_key(pygame.K_RIGHT), lambda app: app.split_shift_state(1, 0)),
+    KeyAction("Grid", "cells", "Shift+Up", "Shift whole pattern up", _shift_key(pygame.K_UP), lambda app: app.shift_state(0, -1)),
+    KeyAction("Grid", "cells", "Shift+Down", "Shift whole pattern down", _shift_key(pygame.K_DOWN), lambda app: app.shift_state(0, 1)),
+    KeyAction("Grid", "cells", "Shift+Left", "Shift whole pattern left", _shift_key(pygame.K_LEFT), lambda app: app.shift_state(-1, 0)),
+    KeyAction("Grid", "cells", "Shift+Right", "Shift whole pattern right", _shift_key(pygame.K_RIGHT), lambda app: app.shift_state(1, 0)),
     KeyAction("Grid", "cells", "Up", "Select previous parameter", lambda event: event.key == pygame.K_UP and not (event.mod & pygame.KMOD_SHIFT), lambda app: app.select_previous_var()),
     KeyAction("Grid", "cells", "Down", "Select next parameter", lambda event: event.key == pygame.K_DOWN and not (event.mod & pygame.KMOD_SHIFT), lambda app: app.select_next_var()),
     KeyAction("Grid", "cells", "Left", "Decrease selected parameter", lambda event: event.key == pygame.K_LEFT and not (event.mod & pygame.KMOD_SHIFT), lambda app: app.scale_selected_var(1 / 1.05)),

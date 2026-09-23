@@ -50,6 +50,7 @@ class SimulatorApp:
         self.focus_name = "cells"
         self.last_mouse_pos = (0, 0)
         self.undo_stack: list[UndoSnapshot] = []
+        self.ignore_next_textinput = False
 
         self.cells_panel = CellsPanel(self.screen, (0, 0), (self.screen_height, self.screen_height), self.state.grid_size)
         self.chart_panel = ChartPanel(self.screen, (self.screen_height, 0), (self.screen_width - self.screen_height, int(self.screen_height / 2)))
@@ -151,6 +152,32 @@ class SimulatorApp:
             self.push_undo_state()
             self.chart_panel.delete_probe(cell_xy)
 
+    def name_probe_under_mouse(self) -> None:
+        hit, cell_xy = self.current_cell()
+        if not hit:
+            return
+        index = self.chart_panel.find_probe_index(cell_xy)
+        if index is None:
+            print("No probe under mouse")
+            return
+        self.set_focus("console")
+        self.console_panel.input = f"name {index} "
+        self.ignore_next_textinput = True
+
+    def name_probe(self, index_str: str, name: str) -> None:
+        try:
+            index = int(index_str)
+        except ValueError:
+            print(f"Invalid probe index '{index_str}'")
+            return
+        probes = self.chart_panel.probes
+        if not (0 <= index < len(probes)):
+            print(f"No probe at index {index}")
+            return
+        self.push_undo_state()
+        probes[index]["label"] = name
+        print(f"Named probe {index} as '{name}'")
+
     def clear_enabled(self) -> None:
         self.push_undo_state()
         self.state.set_all_enableds(False)
@@ -230,10 +257,18 @@ class SimulatorApp:
         self.push_undo_state()
         self.config.scale_selected(factor)
         self.print_var_list()
+        self.check_config_safety()
 
     def print_var_list(self) -> None:
         for line in self.config.describe_lines():
             print(line)
+
+    def check_config_safety(self) -> None:
+        if self.config.stuck_on_risk():
+            print(
+                "Warning: SUPPLY/S >= MIN_FLAME * FLAME_CONSUME -- "
+                "a cell can burn forever without extinguishing"
+            )
 
     def chart_zoom_in(self) -> None:
         self.chart_panel.set_timescale_s(self.chart_panel.timescale_s / 1.25)
@@ -278,6 +313,7 @@ class SimulatorApp:
         self.chart_panel.set_probes(probes)
         self.config.update_from_dict(vars_dict)
         print(f"Loaded {name}.json")
+        self.check_config_safety()
 
     def execute_console_command(self, string: str) -> None:
         words = string.strip().split()
@@ -290,10 +326,13 @@ class SimulatorApp:
             print("ls")
             print("save NAME")
             print("load NAME")
+            print("name INDEX NAME")
         elif words[0] == "save" and len(words) >= 2:
             self.save_snapshot(words[1])
         elif words[0] == "load" and len(words) >= 2:
             self.try_load_snapshot(words[1])
+        elif words[0] == "name" and len(words) >= 3:
+            self.name_probe(words[1], " ".join(words[2:]))
         else:
             print(f"Unrecognised command '{string}'")
 
@@ -350,7 +389,9 @@ class SimulatorApp:
         elif event.type == pygame.MOUSEMOTION:
             self.handle_mouse_motion(event)
         elif event.type == pygame.TEXTINPUT:
-            if self.console_panel.focus:
+            if self.ignore_next_textinput:
+                self.ignore_next_textinput = False
+            elif self.console_panel.focus:
                 self.console_panel.add_input_char(event.text)
         elif event.type == pygame.KEYDOWN:
             if self.console_panel.focus:

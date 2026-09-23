@@ -70,9 +70,10 @@ KEY_ACTIONS = [
     KeyAction("Grid", "cells", "e", "Toggle energy-only view", _plain_key(ord("e")), lambda app: app.toggle_show_only("E")),
     KeyAction("Grid", "cells", "f", "Fill grid with enabled cells", _plain_key(ord("f")), lambda app: app.fill_enabled()),
     KeyAction("Grid", "cells", "i", "Toggle illumination-only view", _plain_key(ord("i")), lambda app: app.toggle_show_only("I")),
+    KeyAction("Grid", "cells", "n", "Name probe under mouse", _plain_key(ord("n")), lambda app: app.name_probe_under_mouse()),
     KeyAction("Grid", "cells", "p", "Pause/resume", _plain_key(ord("p")), lambda app: app.toggle_pause()),
     KeyAction("Grid", "cells", "r", "Randomly strike cells", _plain_key(ord("r")), lambda app: app.random_strike()),
-    KeyAction("Grid", "cells", "z", "Zero energy and flame", _plain_key(ord("z")), lambda app: app.zero_activity()),
+    KeyAction("Grid", "cells", "z", "Zero flame, reset energy to full where enabled", _plain_key(ord("z")), lambda app: app.zero_activity()),
     KeyAction("Grid", "cells", "Ctrl+Shift+Up", "Split at cursor and move upper cells up", _ctrl_shift_key(pygame.K_UP), lambda app: app.split_shift_state(0, -1)),
     KeyAction("Grid", "cells", "Ctrl+Shift+Down", "Split at cursor and move lower cells down", _ctrl_shift_key(pygame.K_DOWN), lambda app: app.split_shift_state(0, 1)),
     KeyAction("Grid", "cells", "Ctrl+Shift+Left", "Split at cursor and move left cells left", _ctrl_shift_key(pygame.K_LEFT), lambda app: app.split_shift_state(-1, 0)),
@@ -98,6 +99,7 @@ STATIC_HELP = [
     HelpEntry("Console", "ls", "List available snapshots"),
     HelpEntry("Console", "save NAME", "Save the current snapshot"),
     HelpEntry("Console", "load NAME", "Load a snapshot"),
+    HelpEntry("Console", "name INDEX NAME", "Name a probe (shown on grid instead of its index)"),
 ]
 
 

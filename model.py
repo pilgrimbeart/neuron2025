@@ -13,7 +13,7 @@ DEFAULT_VARS = {
     "COUPLING_GAIN": 4.0,
     "FLAME_CONSUME": 8.0,
     "FLAME_INERTIA": 0.07,
-    "MIN_FLAME": 0.1,
+    "MIN_FLAME": 0.15,
     "MIN_STRIKE": 0.24,
     "STRIKE_LEVEL": 0.2,
     "SUPPLY/S": 1.0,
@@ -65,6 +65,16 @@ class SimulationConfig:
             lines.append(f"{key} {self.vars[key]}{marker}")
         return lines
 
+    def stuck_on_risk(self) -> bool:
+        """True if a burning cell can find a stable, non-extinguishing equilibrium.
+
+        The relaxation step lets flame settle wherever consumption balances
+        resupply: flame_eq = (SUPPLY/S) / FLAME_CONSUME. If that equilibrium
+        sits at or above MIN_FLAME, a cell that finds it can burn forever
+        without ever crossing the extinguish threshold.
+        """
+        return self.get("SUPPLY/S") >= self.get("MIN_FLAME") * self.get("FLAME_CONSUME")
+
 
 class State:
     def __init__(self, grid_size: tuple[int, int]):
@@ -78,7 +88,14 @@ class State:
         self.enabled_array[:] = state
 
     def reset_energy_and_flame(self) -> None:
+        """Reset to a clean baseline: flame off, energy full wherever enabled.
+
+        Energy is filled rather than emptied so no residual "recently fired"
+        trace (e.g. from a loaded snapshot's history) leaks into whatever
+        reads energy as a proxy for recent activity.
+        """
         self.energy_array[:] = 0
+        self.energy_array[self.enabled_array] = 1.0
         self.flame_array[:] = 0
         self.illumination_array[:] = 0
 

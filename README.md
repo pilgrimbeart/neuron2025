@@ -104,10 +104,11 @@ The grid view can show the combined state or isolate one field:
 - `Space`: advance one simulation step while paused.
 - `c`: clear the enabled pattern and zero activity.
 - `f`: fill the whole grid with enabled cells.
-- `z`: zero energy and flame without changing the enabled pattern.
+- `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled. Useful before a training run so no residual activity history (e.g. from a loaded snapshot) leaks into a fresh trial.
 - `r`: randomly strike roughly one tenth of the cells.
 - `a`: add a chart probe at the cell under the mouse.
 - `d`: delete a chart probe at the cell under the mouse.
+- `n`: name the chart probe at the cell under the mouse (focuses the console with a `name` command pre-filled; type the name and press Enter).
 - `Shift` + arrow keys: shift the whole pattern and its probes.
 - `Ctrl` + `Shift` + arrow keys: split at the cursor by inserting a blank row or column and moving only the cells on that side of the cursor.
 - `=`: zoom in by reducing grid size.
@@ -134,6 +135,7 @@ help
 ls
 save NAME
 load NAME
+name INDEX NAME
 ```
 
 This works with `patterns/*.json`, so `load xor` reads `patterns/xor.json`.

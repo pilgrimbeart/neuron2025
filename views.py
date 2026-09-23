@@ -68,7 +68,8 @@ class CellsPanel:
                 )
 
         for index, probe in enumerate(probes):
-            textpixels = self.probe_font.render(str(index), True, (255, 255, 255))
+            label = probe.get("label") or str(index)
+            textpixels = self.probe_font.render(label, True, (255, 255, 255))
             self.screen.blit(
                 textpixels,
                 (
@@ -184,6 +185,12 @@ class ChartPanel:
                 "illumination_chart": [],
             }
         )
+
+    def find_probe_index(self, cell_xy: tuple[int, int]) -> int | None:
+        for index, probe in enumerate(self.probes):
+            if probe["xy"] == cell_xy:
+                return index
+        return None
 
     def delete_probe(self, cell_xy: tuple[int, int]) -> None:
         self.probes = [probe for probe in self.probes if probe["xy"] != cell_xy]

@@ -65,6 +65,7 @@ The simulator is now split into a small set of modules rather than one large fil
 - `actions.py`: keybinding registry and generated help text
 - `persistence.py`: JSON snapshot loading and saving
 - `recording.py`: video export through `ffmpeg`
+- `headless.py`: run a pattern without pygame — load, step, strike, trace probes, grid-wide summaries. Used for scripted analysis/training and for fast exploratory sweeps across many hypothetical parameter values, as distinct from the control channel below (see "Debugging and Exploration Workflow").
 - `patterns/`: saved simulator snapshots and bundled example layouts
 
 ## Interface Layout
@@ -140,12 +141,14 @@ run SECONDS
 stats
 probes
 inspect X Y
-vars
+params
 quit
 clear
 enable X Y
 disable X Y
 settle
+probe X Y
+deleteprobe X Y
 ```
 
 This works with `patterns/*.json`, so `load xor` reads `patterns/xor.json`.
@@ -172,11 +175,12 @@ you can watch an external agent's actions happen live on screen.
 
 The repository includes several saved layouts:
 
-- `patterns/or.json`: an OR-style arrangement.
+- `patterns/or.json`: a minimal OR gate — two `oneway` gates (see below) feeding a shared relay segment, with an output leg reaching to the grid edge. Either input fires the output; neither input can fire the other.
 - `patterns/xor.json`: an XOR-style arrangement.
 - `patterns/inhibit.json`: an inhibitory structure, described in the original notes as the closest pulse-based analogue of NOT.
 - `patterns/accel.json`: an accelerating or amplifying path experiment.
 - `patterns/osc.json`: an oscillator example.
+- `patterns/oneway.json`: a one-way ("diode") gate — a pulse crosses `a → b` but not `b → a`. See "Building a One-Way Gate" below for how it works.
 - `patterns/recent.json`: the most recently saved working state. This file is intentionally ignored by git.
 
 Each save stores:
@@ -203,6 +207,41 @@ The live parameter set includes:
 - `SUPPLY/S`: energy replenishment rate.
 
 The intended workflow is exploratory: draw a structure, strike it, watch the chart, and tune parameters until the behaviour becomes useful or surprising.
+
+Parameters fall into three different kinds, worth telling apart when tuning:
+
+- **Thresholds/amplitudes** (`MIN_STRIKE`, `STRIKE_LEVEL`, `MIN_FLAME`): fixed values a live quantity is compared against or reset to. Changing these changes *what counts as enough*, not how fast things happen.
+- **Spatial parameters** (`COUPLING_DIST`, `COUPLING_GAIN`): how far and how strongly a burning cell's illumination reaches. Widening these is what lets several cells jointly reach further than any one of them alone (see "Building a One-Way Gate" below).
+- **Rates and time constants** (`FLAME_INERTIA`, `FLAME_CONSUME`, `SUPPLY/S`): govern how fast things happen in real time. `FLAME_INERTIA` is a time constant (bigger = slower response); `FLAME_CONSUME` and `SUPPLY/S` are per-second rates (bigger = faster). Because the whole model runs on elapsed real time rather than fixed frame steps, these three can be scaled together as a group to slow down or speed up a pattern's *pace* without changing anything about what it actually does: multiply `FLAME_INERTIA` by `k` and divide `FLAME_CONSUME` and `SUPPLY/S` by `k`, and every peak value and threshold crossing is preserved — the whole thing just takes `k` times as long in wall-clock time. Useful when a pattern's pulses happen faster than a human can follow.
+
+### The Stuck-On Trap
+
+A burning cell has a real, reachable equilibrium: `flame_eq = (SUPPLY/S) / FLAME_CONSUME`. If that value is at or above `MIN_FLAME`, a cell that settles there never crosses the extinguish threshold and burns forever — silently consuming energy and never re-arming to be struck again. The condition is:
+
+```
+SUPPLY/S >= MIN_FLAME * FLAME_CONSUME   -->   at risk of a cell burning forever
+```
+
+`SimulationConfig.stuck_on_risk()` checks this, and the app prints a warning whenever it's true after a `load` or a parameter change. The bundled defaults and patterns are tuned to stay clear of it.
+
+If you do hit it, the fix is `MIN_FLAME`, not `FLAME_CONSUME`. Raising `FLAME_CONSUME` closes the trap but also lowers a cell's peak flame — which quietly erodes how far a pulse can propagate (single-hop illumination margin can drop to almost nothing) — a regression that's easy to miss until a specific pattern happens to need that margin. Raising `MIN_FLAME` instead only changes the extinguish threshold and leaves peak flame/propagation reach untouched.
+
+### Building a One-Way Gate
+
+Under default coupling, one cell reliably ignites an *adjacent* cell (illumination comfortably clears `MIN_STRIKE`), but cannot ignite a cell one gap further away (illumination falls off too fast to reach threshold) — even a wide fan of cells contributing at once isn't enough. Widening `COUPLING_DIST`/`COUPLING_GAIN` changes the balance: a single cell still can't jump a one-cell gap, but three cells in a row *can*, because their combined illumination clears the threshold at the far side even though any one of them alone falls short.
+
+That asymmetry is a one-way gate ("diode"): a line widens into a 3-cell fan, crosses an empty gap cell, and narrows back to a single target cell. A pulse arriving at the fan crosses the gap; a pulse arriving at the lone target cell cannot gather enough cells to send anything back. `patterns/oneway.json` is exactly this.
+
+**Gotcha — accidental fans.** Any 3 (or more) roughly-in-line cells near a gap can jump it, not just the intended fan — including cells you placed there for an unrelated reason. `patterns/or.json` (two `oneway` gates sharing an output) first broke this way: a target cell plus a 2-cell start of its onward output leg formed an unintentional 3-cell column at exactly gap-distance from the *other* gate's fan, and jumped that gap too, silently defeating the one-way property. Checking cell-by-cell distance to the nearest gap isn't enough — it's the *combined* illumination from every enabled cell within range that matters, and a handful of stray cells add up to the same effect as a deliberate fan.
+
+The fix that worked: don't let the two gates' targets sit edge-to-edge. Give them a plain relay segment between the two targets, and branch any onward line from the *middle* of that segment — far enough from both fans (several cells of clearance, not one) that nothing there can contribute meaningfully to either gap-jump. `patterns/or.json` uses exactly this shape. Whatever the layout, verify isolation empirically (strike one side, confirm every cell on the *other* side — including any new pattern you add later — never lights up) rather than trusting that a geometry "looks" far enough apart.
+
+### Debugging and Exploration Workflow
+
+Two complementary ways to work with the simulator programmatically:
+
+- **The control channel** (`control_in.txt` / `control_out.log`, see above) drives the *live, on-screen* session — use it for anything you want a human watching to be able to see happen, and for the final verification of any change.
+- **`headless.py`**, run directly in throwaway scripts, drives an offline `State`/`SimulationConfig` with no pygame dependency — use it for fast, disposable sweeps across many hypothetical geometries or parameter values where nobody needs to watch each one, before settling on a design to build and verify live.
 
 ## Project Status
 

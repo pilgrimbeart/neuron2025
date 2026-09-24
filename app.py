@@ -353,6 +353,29 @@ class SimulatorApp:
         self.set_enabled(xy, state)
         print(f"{'Enabled' if state else 'Disabled'} {xy}")
 
+    def console_probe(self, x_str: str, y_str: str) -> None:
+        try:
+            xy = (int(x_str), int(y_str))
+        except ValueError:
+            print(f"Invalid coordinates '{x_str} {y_str}'")
+            return
+        if not (0 <= xy[0] < self.state.grid_size[0] and 0 <= xy[1] < self.state.grid_size[1]):
+            print(f"Coordinates {xy} out of range")
+            return
+        self.push_undo_state()
+        self.chart_panel.add_probe(xy)
+        print(f"Added probe at {xy}")
+
+    def console_deleteprobe(self, x_str: str, y_str: str) -> None:
+        try:
+            xy = (int(x_str), int(y_str))
+        except ValueError:
+            print(f"Invalid coordinates '{x_str} {y_str}'")
+            return
+        self.push_undo_state()
+        self.chart_panel.delete_probe(xy)
+        print(f"Deleted probe at {xy}")
+
     def console_strike(self, target: str) -> None:
         probe = probe_by_label(self.chart_panel.probes, target)
         if probe is None:
@@ -461,12 +484,14 @@ class SimulatorApp:
             print("stats")
             print("probes")
             print("inspect X Y")
-            print("vars")
+            print("params")
             print("quit")
             print("clear")
             print("enable X Y")
             print("disable X Y")
             print("settle")
+            print("probe X Y")
+            print("deleteprobe X Y")
         elif words[0] == "save" and len(words) >= 2:
             self.save_snapshot(words[1])
         elif words[0] == "load" and len(words) >= 2:
@@ -487,7 +512,7 @@ class SimulatorApp:
             self.console_probes()
         elif words[0] == "inspect" and len(words) == 3:
             self.console_inspect(words[1], words[2])
-        elif words[0] == "vars" and len(words) == 1:
+        elif words[0] == "params" and len(words) == 1:
             self.print_var_list()
         elif words[0] == "quit" and len(words) == 1:
             self.request_quit()
@@ -500,6 +525,10 @@ class SimulatorApp:
         elif words[0] == "settle" and len(words) == 1:
             self.zero_activity()
             print("Settled: flame off, energy full where enabled")
+        elif words[0] == "probe" and len(words) == 3:
+            self.console_probe(words[1], words[2])
+        elif words[0] == "deleteprobe" and len(words) == 3:
+            self.console_deleteprobe(words[1], words[2])
         else:
             print(f"Unrecognised command '{string}'")
 

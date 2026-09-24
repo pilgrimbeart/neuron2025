@@ -5,14 +5,20 @@ import random
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pygame
 
 from actions import FOCUS_ORDER, build_help_lines, dispatch_keydown
+from headless import grid_summary, probe_by_label
 from model import SimulationConfig, State, resized_state
 from persistence import list_snapshot_names, load_snapshot, save_snapshot
 from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
+
+
+CONTROL_IN_PATH = Path("control_in.txt")
+CONTROL_OUT_PATH = Path("control_out.log")
 
 
 @dataclass
@@ -22,6 +28,21 @@ class UndoSnapshot:
     config_vars: dict[str, float]
     config_selected: int
     show_only: str
+
+
+class _Tee:
+    """Writes to several file-like sinks at once (used for sys.stdout)."""
+
+    def __init__(self, *sinks) -> None:
+        self.sinks = sinks
+
+    def write(self, string: str) -> None:
+        for sink in self.sinks:
+            sink.write(string)
+
+    def flush(self) -> None:
+        for sink in self.sinks:
+            sink.flush()
 
 
 class SimulatorApp:
@@ -65,7 +86,9 @@ class SimulatorApp:
         self.recorder = VideoRecorder(fps=30)
 
         self.original_stdout = sys.stdout
-        sys.stdout = self.console_panel
+        self.control_log = open(CONTROL_OUT_PATH, "a", buffering=1)
+        sys.stdout = _Tee(self.console_panel, self.control_log)
+        CONTROL_IN_PATH.write_text("")
 
         self.set_focus("cells")
         print("Hello everyone")
@@ -315,6 +338,88 @@ class SimulatorApp:
         print(f"Loaded {name}.json")
         self.check_config_safety()
 
+    def console_strike(self, target: str) -> None:
+        probe = probe_by_label(self.chart_panel.probes, target)
+        if probe is None:
+            print(f"No probe labelled '{target}'")
+            return
+        self.push_undo_state()
+        self.strike_cell(probe["xy"])
+        self.chart_panel.trig()
+        print(f"Struck '{target}' at {probe['xy']}")
+
+    def console_strike_xy(self, x_str: str, y_str: str) -> None:
+        try:
+            xy = (int(x_str), int(y_str))
+        except ValueError:
+            print(f"Invalid coordinates '{x_str} {y_str}'")
+            return
+        if not (0 <= xy[0] < self.state.grid_size[0] and 0 <= xy[1] < self.state.grid_size[1]):
+            print(f"Coordinates {xy} out of range")
+            return
+        self.push_undo_state()
+        self.strike_cell(xy)
+        self.chart_panel.trig()
+        print(f"Struck {xy}")
+
+    def console_set(self, name: str, value_str: str) -> None:
+        if name not in self.config.vars:
+            print(f"Unknown var '{name}'")
+            return
+        try:
+            value = float(value_str)
+        except ValueError:
+            print(f"Invalid value '{value_str}'")
+            return
+        self.push_undo_state()
+        self.config.set(name, value)
+        self.print_var_list()
+        self.check_config_safety()
+
+    def console_step(self, n_str: str) -> None:
+        try:
+            n = int(n_str)
+        except ValueError:
+            print(f"Invalid step count '{n_str}'")
+            return
+        n = max(0, min(n, 5000))
+        for _ in range(n):
+            self.state.update(1 / 50.0, self.config)
+            self.chart_panel.update(1 / 50.0, self.state)
+        print(f"Stepped {n} ticks")
+
+    def console_stats(self) -> None:
+        lit, total_flame = grid_summary(self.state)
+        enabled = self.state.enabled_array
+        energy = self.state.energy_array[enabled]
+        print(f"lit_cells={lit} total_flame={total_flame:.4f}")
+        if energy.size:
+            print(f"energy(enabled): min={energy.min():.4f} mean={energy.mean():.4f} max={energy.max():.4f}")
+
+    def console_probes(self) -> None:
+        for index, probe in enumerate(self.chart_panel.probes):
+            xy = probe["xy"]
+            label = probe.get("label") or str(index)
+            e = float(self.state.energy_array[xy])
+            f = float(self.state.flame_array[xy])
+            i = float(self.state.illumination_array[xy])
+            print(f"{label:12s} {xy}  energy={e:.4f} flame={f:.4f} illumination={i:.4f}")
+
+    def console_inspect(self, x_str: str, y_str: str) -> None:
+        try:
+            xy = (int(x_str), int(y_str))
+        except ValueError:
+            print(f"Invalid coordinates '{x_str} {y_str}'")
+            return
+        if not (0 <= xy[0] < self.state.grid_size[0] and 0 <= xy[1] < self.state.grid_size[1]):
+            print(f"Coordinates {xy} out of range")
+            return
+        enabled = bool(self.state.enabled_array[xy])
+        e = float(self.state.energy_array[xy])
+        f = float(self.state.flame_array[xy])
+        i = float(self.state.illumination_array[xy])
+        print(f"{xy} enabled={enabled} energy={e:.4f} flame={f:.4f} illumination={i:.4f}")
+
     def execute_console_command(self, string: str) -> None:
         words = string.strip().split()
         if not words:
@@ -327,12 +432,38 @@ class SimulatorApp:
             print("save NAME")
             print("load NAME")
             print("name INDEX NAME")
+            print("strike X Y | strike LABEL")
+            print("set VAR VALUE")
+            print("step N")
+            print("stats")
+            print("probes")
+            print("inspect X Y")
+            print("vars")
+            print("quit")
         elif words[0] == "save" and len(words) >= 2:
             self.save_snapshot(words[1])
         elif words[0] == "load" and len(words) >= 2:
             self.try_load_snapshot(words[1])
         elif words[0] == "name" and len(words) >= 3:
             self.name_probe(words[1], " ".join(words[2:]))
+        elif words[0] == "strike" and len(words) == 3:
+            self.console_strike_xy(words[1], words[2])
+        elif words[0] == "strike" and len(words) == 2:
+            self.console_strike(words[1])
+        elif words[0] == "set" and len(words) == 3:
+            self.console_set(words[1], words[2])
+        elif words[0] == "step" and len(words) == 2:
+            self.console_step(words[1])
+        elif words[0] == "stats" and len(words) == 1:
+            self.console_stats()
+        elif words[0] == "probes" and len(words) == 1:
+            self.console_probes()
+        elif words[0] == "inspect" and len(words) == 3:
+            self.console_inspect(words[1], words[2])
+        elif words[0] == "vars" and len(words) == 1:
+            self.print_var_list()
+        elif words[0] == "quit" and len(words) == 1:
+            self.request_quit()
         else:
             print(f"Unrecognised command '{string}'")
 
@@ -419,6 +550,20 @@ class SimulatorApp:
         self.recorder.add_frame(self.screen, delta_s)
         pygame.display.flip()
 
+    def poll_control_input(self) -> None:
+        try:
+            content = CONTROL_IN_PATH.read_text()
+        except OSError:
+            return
+        if not content:
+            return
+        CONTROL_IN_PATH.write_text("")
+        for line in content.splitlines():
+            line = line.strip()
+            if line:
+                print(f"[control] {line}")
+                self.execute_console_command(line)
+
     def run(self) -> None:
         this_frame_start = time.time()
         try:
@@ -432,6 +577,7 @@ class SimulatorApp:
                 for event in pygame.event.get():
                     self.handle_event(event)
 
+                self.poll_control_input()
                 self.update(delta)
                 self.render(delta)
         finally:
@@ -441,4 +587,5 @@ class SimulatorApp:
                 save_snapshot("recent", self.state, self.chart_panel.probes, self.config)
             finally:
                 sys.stdout = self.original_stdout
+                self.control_log.close()
                 pygame.quit()

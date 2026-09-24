@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 videos/
 patterns/recent.json
+control_in.txt
+control_out.log

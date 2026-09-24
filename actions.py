@@ -100,6 +100,14 @@ STATIC_HELP = [
     HelpEntry("Console", "save NAME", "Save the current snapshot"),
     HelpEntry("Console", "load NAME", "Load a snapshot"),
     HelpEntry("Console", "name INDEX NAME", "Name a probe (shown on grid instead of its index)"),
+    HelpEntry("Console", "strike X Y | strike LABEL", "Strike a cell by coordinate or probe label"),
+    HelpEntry("Console", "set VAR VALUE", "Set a parameter directly"),
+    HelpEntry("Console", "step N", "Advance N simulation ticks immediately"),
+    HelpEntry("Console", "stats", "Print grid-wide activity summary"),
+    HelpEntry("Console", "probes", "Print each probe's live energy/flame/illumination"),
+    HelpEntry("Console", "inspect X Y", "Print one cell's live energy/flame/illumination"),
+    HelpEntry("Console", "vars", "Print the current parameter values"),
+    HelpEntry("Console", "quit", "Quit the simulator"),
 ]
 
 

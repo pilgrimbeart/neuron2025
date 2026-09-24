@@ -127,8 +127,6 @@ The grid view can show the combined state or isolate one field:
 
 ### Console Commands
 
-The console is intentionally minimal:
-
 ```text
 help
 ?
@@ -136,10 +134,35 @@ ls
 save NAME
 load NAME
 name INDEX NAME
+strike X Y | strike LABEL
+set VAR VALUE
+step N
+stats
+probes
+inspect X Y
+vars
+quit
 ```
 
 This works with `patterns/*.json`, so `load xor` reads `patterns/xor.json`.
 When the console has focus, normal typing stays local to the console; `Tab` and `Esc` still work globally.
+
+### External Control Channel
+
+While the simulator is running, an external process (e.g. an AI agent) can
+drive and inspect the *same live session* the console commands above act on:
+
+- Append console command lines to `control_in.txt` (repo root, gitignored).
+  Each frame the app reads any new lines, runs them through the same command
+  handler as the on-screen console, echoes `[control] <command>` so you can
+  see what ran, then clears the file.
+- All console output (from typed commands, control-channel commands, and
+  ordinary `print()`s) is mirrored to `control_out.log` (also gitignored),
+  regardless of how the process's own stdout/stderr are connected.
+
+This is the same command language either way — typing in the console and
+appending to `control_in.txt` are two entry points to one dispatcher, so
+you can watch an external agent's actions happen live on screen.
 
 ## Bundled Example States
 

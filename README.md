@@ -136,7 +136,7 @@ load NAME
 name INDEX NAME
 strike X Y | strike LABEL
 set VAR VALUE
-step N
+run SECONDS
 stats
 probes
 inspect X Y

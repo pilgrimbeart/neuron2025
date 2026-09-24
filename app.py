@@ -397,17 +397,19 @@ class SimulatorApp:
         self.print_var_list()
         self.check_config_safety()
 
-    def console_step(self, n_str: str) -> None:
+    def console_run(self, seconds_str: str) -> None:
         try:
-            n = int(n_str)
+            seconds = float(seconds_str)
         except ValueError:
-            print(f"Invalid step count '{n_str}'")
+            print(f"Invalid duration '{seconds_str}'")
             return
-        n = max(0, min(n, 5000))
+        dt = 1 / 50.0
+        n = max(0, min(round(seconds / dt), 5000))
+        self.paused = True
         for _ in range(n):
-            self.state.update(1 / 50.0, self.config)
-            self.chart_panel.update(1 / 50.0, self.state)
-        print(f"Stepped {n} ticks")
+            self.state.update(dt, self.config)
+            self.chart_panel.update(dt, self.state)
+        print(f"Ran {n * dt:.2f}s ({n} ticks), paused")
 
     def console_stats(self) -> None:
         lit, total_flame = grid_summary(self.state)
@@ -455,7 +457,7 @@ class SimulatorApp:
             print("name INDEX NAME")
             print("strike X Y | strike LABEL")
             print("set VAR VALUE")
-            print("step N")
+            print("run SECONDS")
             print("stats")
             print("probes")
             print("inspect X Y")
@@ -477,8 +479,8 @@ class SimulatorApp:
             self.console_strike(words[1])
         elif words[0] == "set" and len(words) == 3:
             self.console_set(words[1], words[2])
-        elif words[0] == "step" and len(words) == 2:
-            self.console_step(words[1])
+        elif words[0] == "run" and len(words) == 2:
+            self.console_run(words[1])
         elif words[0] == "stats" and len(words) == 1:
             self.console_stats()
         elif words[0] == "probes" and len(words) == 1:

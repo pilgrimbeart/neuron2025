@@ -7,3 +7,5 @@ When changing the codebase, prefer a complete rip-up-and-rewrite with breaking c
 Do not favor incremental edits that preserve legacy structure at the cost of accumulating spaghetti.
 
 Minimalism, clarity, and a single obvious architecture are preferred over compatibility with earlier internal layouts.
+
+No one else works on this project. Always work directly on `main` -- commit and push there, don't create feature branches or PRs.

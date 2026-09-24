@@ -85,7 +85,7 @@ The grid view can show the combined state or isolate one field:
 
 ### Mouse
 
-- Left click on a cell: toggle whether the cell is enabled.
+- Left click on a cell: toggle whether the cell is enabled. Enabling fills its energy to full; disabling zeroes it.
 - Left-drag: paint more cells with the same enabled/disabled state.
 - Right click on a cell: strike it if it has enough energy, and trigger the chart timebase.
 - Click a panel: move keyboard focus between grid, chart, and console.
@@ -142,6 +142,10 @@ probes
 inspect X Y
 vars
 quit
+clear
+enable X Y
+disable X Y
+settle
 ```
 
 This works with `patterns/*.json`, so `load xor` reads `patterns/xor.json`.

@@ -108,6 +108,10 @@ STATIC_HELP = [
     HelpEntry("Console", "inspect X Y", "Print one cell's live energy/flame/illumination"),
     HelpEntry("Console", "vars", "Print the current parameter values"),
     HelpEntry("Console", "quit", "Quit the simulator"),
+    HelpEntry("Console", "clear", "Clear the enabled pattern and zero activity"),
+    HelpEntry("Console", "enable X Y", "Enable a cell"),
+    HelpEntry("Console", "disable X Y", "Disable a cell"),
+    HelpEntry("Console", "settle", "Flame off, energy full where enabled"),
 ]
 
 

@@ -153,15 +153,17 @@ class SimulatorApp:
 
     def set_enabled(self, xy: tuple[int, int], state: bool) -> None:
         self.state.enabled_array[xy] = state
-        self.state.energy_array[xy] = 0
+        self.state.energy_array[xy] = 1.0 if state else 0.0
         self.state.flame_array[xy] = 0
 
     def get_enabled(self, xy: tuple[int, int]) -> bool:
         return bool(self.state.enabled_array[xy])
 
-    def strike_cell(self, cell_xy: tuple[int, int]) -> None:
+    def strike_cell(self, cell_xy: tuple[int, int]) -> bool:
         if self.state.enabled_array[cell_xy] and self.state.energy_array[cell_xy] >= self.config.get("MIN_STRIKE"):
             self.state.flame_array[cell_xy] = self.config.get("STRIKE_LEVEL")
+            return True
+        return False
 
     def add_probe_under_mouse(self) -> None:
         hit, cell_xy = self.current_cell()
@@ -338,15 +340,31 @@ class SimulatorApp:
         print(f"Loaded {name}.json")
         self.check_config_safety()
 
+    def console_enable(self, x_str: str, y_str: str, state: bool) -> None:
+        try:
+            xy = (int(x_str), int(y_str))
+        except ValueError:
+            print(f"Invalid coordinates '{x_str} {y_str}'")
+            return
+        if not (0 <= xy[0] < self.state.grid_size[0] and 0 <= xy[1] < self.state.grid_size[1]):
+            print(f"Coordinates {xy} out of range")
+            return
+        self.push_undo_state()
+        self.set_enabled(xy, state)
+        print(f"{'Enabled' if state else 'Disabled'} {xy}")
+
     def console_strike(self, target: str) -> None:
         probe = probe_by_label(self.chart_panel.probes, target)
         if probe is None:
             print(f"No probe labelled '{target}'")
             return
         self.push_undo_state()
-        self.strike_cell(probe["xy"])
+        ok = self.strike_cell(probe["xy"])
         self.chart_panel.trig()
-        print(f"Struck '{target}' at {probe['xy']}")
+        if ok:
+            print(f"Struck '{target}' at {probe['xy']}")
+        else:
+            print(f"Cannot strike '{target}' at {probe['xy']}: disabled or insufficient energy")
 
     def console_strike_xy(self, x_str: str, y_str: str) -> None:
         try:
@@ -358,9 +376,12 @@ class SimulatorApp:
             print(f"Coordinates {xy} out of range")
             return
         self.push_undo_state()
-        self.strike_cell(xy)
+        ok = self.strike_cell(xy)
         self.chart_panel.trig()
-        print(f"Struck {xy}")
+        if ok:
+            print(f"Struck {xy}")
+        else:
+            print(f"Cannot strike {xy}: disabled or insufficient energy")
 
     def console_set(self, name: str, value_str: str) -> None:
         if name not in self.config.vars:
@@ -440,6 +461,10 @@ class SimulatorApp:
             print("inspect X Y")
             print("vars")
             print("quit")
+            print("clear")
+            print("enable X Y")
+            print("disable X Y")
+            print("settle")
         elif words[0] == "save" and len(words) >= 2:
             self.save_snapshot(words[1])
         elif words[0] == "load" and len(words) >= 2:
@@ -464,6 +489,15 @@ class SimulatorApp:
             self.print_var_list()
         elif words[0] == "quit" and len(words) == 1:
             self.request_quit()
+        elif words[0] == "clear" and len(words) == 1:
+            self.clear_enabled()
+        elif words[0] == "enable" and len(words) == 3:
+            self.console_enable(words[1], words[2], True)
+        elif words[0] == "disable" and len(words) == 3:
+            self.console_enable(words[1], words[2], False)
+        elif words[0] == "settle" and len(words) == 1:
+            self.zero_activity()
+            print("Settled: flame off, energy full where enabled")
         else:
             print(f"Unrecognised command '{string}'")
 

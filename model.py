@@ -9,14 +9,14 @@ import scipy.ndimage
 
 
 DEFAULT_VARS = {
-    "COUPLING_DIST": 1.0,
-    "COUPLING_GAIN": 4.0,
-    "FLAME_CONSUME": 8.0,
-    "FLAME_INERTIA": 0.07,
-    "MIN_FLAME": 0.15,
-    "MIN_STRIKE": 0.24,
-    "STRIKE_LEVEL": 0.2,
-    "SUPPLY/S": 1.0,
+    "COUPLING_DIST": 0.85,
+    "COUPLING_GAIN": 6.0,
+    "FLAME_CONSUME": 2.0,
+    "FLAME_INERTIA": 1.0,
+    "MIN_FLAME": 0.09,
+    "MIN_STRIKE": 0.23,
+    "STRIKE_LEVEL": 0.18,
+    "SUPPLY/S": 0.14,
 }
 
 

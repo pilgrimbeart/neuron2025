@@ -175,12 +175,13 @@ you can watch an external agent's actions happen live on screen.
 
 The repository includes several saved layouts:
 
-- `patterns/or.json`: a minimal OR gate — two `oneway` gates (see below) feeding a shared relay segment, with an output leg reaching to the grid edge. Either input fires the output; neither input can fire the other.
-- `patterns/xor.json`: an XOR-style arrangement.
+- `patterns/oneway.json`: a one-way ("diode") gate — a pulse crosses `a → b` but not `b → a`.
+- `patterns/and.json`: an AND gate — `out`/`edge` fire only when `a` and `b` are struck together; either alone does nothing, and nothing flows back from the output.
+- `patterns/or.json`: an OR gate — two diodes feeding a shared relay, with an output leg to the grid edge. Either input fires the output; neither input can fire the other.
+- `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~1.75 s of each other. See "Building XOR" below.
 - `patterns/inhibit.json`: an inhibitory structure, described in the original notes as the closest pulse-based analogue of NOT.
 - `patterns/accel.json`: an accelerating or amplifying path experiment.
 - `patterns/osc.json`: an oscillator example.
-- `patterns/oneway.json`: a one-way ("diode") gate — a pulse crosses `a → b` but not `b → a`. See "Building a One-Way Gate" below for how it works.
 - `patterns/recent.json`: the most recently saved working state. This file is intentionally ignored by git.
 
 Each save stores:
@@ -210,31 +211,76 @@ The intended workflow is exploratory: draw a structure, strike it, watch the cha
 
 Parameters fall into three different kinds, worth telling apart when tuning:
 
-- **Thresholds/amplitudes** (`MIN_STRIKE`, `STRIKE_LEVEL`, `MIN_FLAME`): fixed values a live quantity is compared against or reset to. Changing these changes *what counts as enough*, not how fast things happen.
-- **Spatial parameters** (`COUPLING_DIST`, `COUPLING_GAIN`): how far and how strongly a burning cell's illumination reaches. Widening these is what lets several cells jointly reach further than any one of them alone (see "Building a One-Way Gate" below).
-- **Rates and time constants** (`FLAME_INERTIA`, `FLAME_CONSUME`, `SUPPLY/S`): govern how fast things happen in real time. `FLAME_INERTIA` is a time constant (bigger = slower response); `FLAME_CONSUME` and `SUPPLY/S` are per-second rates (bigger = faster). Because the whole model runs on elapsed real time rather than fixed frame steps, these three can be scaled together as a group to slow down or speed up a pattern's *pace* without changing anything about what it actually does: multiply `FLAME_INERTIA` by `k` and divide `FLAME_CONSUME` and `SUPPLY/S` by `k`, and every peak value and threshold crossing is preserved — the whole thing just takes `k` times as long in wall-clock time. Useful when a pattern's pulses happen faster than a human can follow.
+- **Thresholds/amplitudes** (`MIN_STRIKE`, `STRIKE_LEVEL`, `MIN_FLAME`): fixed values a live quantity is compared against or reset to.
+- **Spatial parameters** (`COUPLING_DIST`, `COUPLING_GAIN`): how far and how strongly a burning cell's illumination reaches.
+- **Rates and time constants** (`FLAME_INERTIA`, `FLAME_CONSUME`, `SUPPLY/S`): how fast things happen in real time. Multiplying `FLAME_INERTIA` by `k` and dividing `FLAME_CONSUME` and `SUPPLY/S` by `k` preserves every peak and threshold crossing and just makes everything take `k` times as long. Note this cannot change *how many cells* a pulse travels per recovery period — see below.
 
 ### The Stuck-On Trap
 
-A burning cell has a real, reachable equilibrium: `flame_eq = (SUPPLY/S) / FLAME_CONSUME`. If that value is at or above `MIN_FLAME`, a cell that settles there never crosses the extinguish threshold and burns forever — silently consuming energy and never re-arming to be struck again. The condition is:
+A burning cell has a reachable equilibrium `flame_eq = (SUPPLY/S) / FLAME_CONSUME`. If that is at or above `MIN_FLAME`, a cell that settles there burns forever. The condition is:
 
 ```
 SUPPLY/S >= MIN_FLAME * FLAME_CONSUME   -->   at risk of a cell burning forever
 ```
 
-`SimulationConfig.stuck_on_risk()` checks this, and the app prints a warning whenever it's true after a `load` or a parameter change. The bundled defaults and patterns are tuned to stay clear of it.
+`SimulationConfig.stuck_on_risk()` checks this, and the app warns whenever it's true after a `load` or a parameter change. Fix it by raising `MIN_FLAME` or lowering `SUPPLY/S`, not by raising `FLAME_CONSUME` (which also lowers peak flame and erodes propagation) — and check rule 5 below when raising `MIN_FLAME`.
 
-If you do hit it, the fix is `MIN_FLAME`, not `FLAME_CONSUME`. Raising `FLAME_CONSUME` closes the trap but also lowers a cell's peak flame — which quietly erodes how far a pulse can propagate (single-hop illumination margin can drop to almost nothing) — a regression that's easy to miss until a specific pattern happens to need that margin. Raising `MIN_FLAME` instead only changes the extinguish threshold and leaves peak flame/propagation reach untouched.
+### Designing Gates From First Principles
 
-### Building a One-Way Gate
+The bundled gates and the default parameters are derived, not searched for. Five quantities matter:
 
-Under default coupling, one cell reliably ignites an *adjacent* cell (illumination comfortably clears `MIN_STRIKE`), but cannot ignite a cell one gap further away (illumination falls off too fast to reach threshold) — even a wide fan of cells contributing at once isn't enough. Widening `COUPLING_DIST`/`COUPLING_GAIN` changes the balance: a single cell still can't jump a one-cell gap, but three cells in a row *can*, because their combined illumination clears the threshold at the far side even though any one of them alone falls short.
+- **θ, the ignition threshold in flame units:** `θ = MIN_STRIKE / (COUPLING_GAIN · w_orth)`, where `w_orth` is the Gaussian weight of an orthogonal neighbour. A cell next to one burning neighbour ignites when that neighbour's flame reaches θ. Gain and `MIN_STRIKE` only ever act through this ratio.
+- **f_peak:** the peak flame of a burning cell, set by the pulse shape (`FLAME_INERTIA`, `FLAME_CONSUME`, `STRIKE_LEVEL`, `MIN_FLAME`).
+- **r = w_diag / w_orth = exp(−1 / 2σ²)**, with σ = `COUPLING_DIST`.
+- **Hop time** ≈ `FLAME_INERTIA · ln((1 − STRIKE_LEVEL) / (1 − θ))`, slightly shortened by the pull from the cell two back.
+- **Refractory time** ≈ burn duration + energy recovery, which scales with `1 / SUPPLY/S`.
 
-That asymmetry is a one-way gate ("diode"): a line widens into a 3-cell fan, crosses an empty gap cell, and narrows back to a single target cell. A pulse arriving at the fan crosses the gap; a pulse arriving at the lone target cell cannot gather enough cells to send anything back. `patterns/oneway.json` is exactly this.
+The rules:
 
-**Gotcha — accidental fans.** Any 3 (or more) roughly-in-line cells near a gap can jump it, not just the intended fan — including cells you placed there for an unrelated reason. `patterns/or.json` (two `oneway` gates sharing an output) first broke this way: a target cell plus a 2-cell start of its onward output leg formed an unintentional 3-cell column at exactly gap-distance from the *other* gate's fan, and jumped that gap too, silently defeating the one-way property. Checking cell-by-cell distance to the nearest gap isn't enough — it's the *combined* illumination from every enabled cell within range that matters, and a handful of stray cells add up to the same effect as a deliberate fan.
+1. **Lines propagate:** θ < f_peak.
+2. **Diode/AND window:** one diagonal neighbour must *not* ignite a cell, two must: `r · f_peak < θ < 2r · f_peak`. The window is widest at σ ≈ 0.85 (r = 0.5); put θ near its geometric centre, ≈ 0.7 · f_peak, for about ±40% margin.
+3. **Hysteresis:** `STRIKE_LEVEL ≥ 2 · MIN_FLAME`, and `STRIKE_LEVEL < θ`.
+4. **No stuck-on:** `SUPPLY/S` comfortably below `MIN_FLAME · FLAME_CONSUME`.
+5. **No re-entry at junctions:** automatic ignition has no energy check, so a cell that has just gone out relights if its still-burning neighbours' combined tails reach θ. Those tails are near `MIN_FLAME`, so with `n` simultaneously-burning orthogonal neighbours you need `θ > n · MIN_FLAME` — n = 3 at any fork or T-junction — plus margin. Violating this turns junctions into oscillators. Count diagonal neighbours at weight r and any nearby parallel line (rule 6) toward n.
+6. **Keep unrelated lines ≥ 3 apart.** A fully lit line two cells away delivers about 25% of an orthogonal neighbour's illumination (`(k2/k1)(1 + 2·k1/k0)` with the 1-D kernel weights). That is enough to make a parallel line catch fire almost all at once, and to tip nearby junctions over rule 5.
 
-The fix that worked: don't let the two gates' targets sit edge-to-edge. Give them a plain relay segment between the two targets, and branch any onward line from the *middle* of that segment — far enough from both fans (several cells of clearance, not one) that nothing there can contribute meaningfully to either gap-jump. `patterns/or.json` uses exactly this shape. Whatever the layout, verify isolation empirically (strike one side, confirm every cell on the *other* side — including any new pattern you add later — never lights up) rather than trusting that a geometry "looks" far enough apart.
+**The diode.** Narrow coupling means a cell can't reach two cells away, but an orthogonal neighbour can ignite a cell while a single diagonal one can't (rule 2). So the input line forks and wraps around the target, touching it only diagonally from two sides. Forward, the two diagonal cells burn together and ignite the target; backward, the burning target reaches each fork cell through one diagonal only, which is too weak:
+
+```
+. x x . . . .
+x x . T x x x      input line on the left, T = target, output on the right
+. x x . . . .
+```
+
+**AND is the same geometry** with the two diagonal feeders coming from separate inputs, so it is one-way by construction. **OR** is two diodes feeding a shared relay, with the output branching from the relay's middle.
+
+Current shared parameters: `COUPLING_DIST=0.85 COUPLING_GAIN=6 FLAME_CONSUME=2 FLAME_INERTIA=1 MIN_FLAME=0.09 MIN_STRIKE=0.23 STRIKE_LEVEL=0.18 SUPPLY/S=0.14`, giving θ ≈ 0.35 ≈ 0.7 · f_peak ≈ 3.9 · `MIN_FLAME`, hops of ≈ 0.16 s, and a refractory time of ≈ 7.6 s. Every gate still works with `COUPLING_GAIN` changed by ±20%, and at 30–100 fps.
+
+**Cells per refractory period** (refractory time ÷ hop time, ≈ 48 here) is the number that sets how long a delay line must be to hold one signal back until another has recovered. It is dimensionless, so uniform time scaling can't change it; only pulse *shape* and σ can. Narrow σ helps because with wide coupling, cells several steps back keep pushing the front forward. Rules 4 and 5 pull against each other (low `MIN_FLAME` versus fast recovery), which is what limits it.
+
+### How the Constraints Interact
+
+Every rule above is a statement about where θ sits relative to the pulse shape, so they compete for the same range:
+
+- **Slow propagation versus margins.** A slow hop means θ sits high on flame's rising flank (rule 1). That squeezes the line's own margin, and it makes hop time very sensitive to anything that shifts θ: a ±20% change in gain moves hop time from 0.29 s to 0.12 s. Centring θ in the diode window (rule 2) is the compromise.
+- **Hysteresis versus recovery.** Rule 5 wants `MIN_FLAME` well below θ, but the stuck-on limit (rule 4) caps `SUPPLY/S` at `MIN_FLAME · FLAME_CONSUME`, so a low `MIN_FLAME` means slow recovery and long refractory times. Together these limit how few cells a delay line can have (≈ 48 per refractory period here).
+- **`STRIKE_LEVEL` does two jobs.** Keeping it ≥ 2 · `MIN_FLAME` (rule 3) gives a clean ignition, and keeping it below θ means a depleted cell that gets relit (it only ever reaches `STRIKE_LEVEL` before fizzling) can never ignite its neighbours. Those harmless fizzles show up wherever a diode target is hit twice in quick succession.
+- **Timing windows mix gain-sensitive and gain-insensitive quantities.** Path delays scale with hop time, which is very gain-sensitive. The coincidence window (≈ 2–2.5 s, set by how long two flames overlap) and the refractory time (≈ 7.6 s) are set by pulse shape and barely move. Any circuit that races two paths must put its delay near the geometric centre of the window it needs, because the hop time can vary by a factor of about 2.4 while that window only spans about 2.8×.
+- **Equal path lengths into a coincidence junction.** At low gain the two-diagonal margin is thin, so an AND only fires if its inputs arrive together. Give both inputs the same path length.
+
+### Building XOR
+
+XOR is not monotonic, so it needs inhibition. The only inhibition this medium has is refractoriness: a region that has just burned can't carry a wave. The gate is:
+
+- an **OR** of the inputs, whose output travels a long route (the delay line) to a **split** into two strands four cells apart;
+- a **coincidence junction** (the AND/diode geometry) where the two strands meet diagonally, feeding the output line;
+- an **AND** of the inputs (the veto), whose output joins strand 1 close to the junction.
+
+One input: the OR signal arrives on both strands together and fires the junction. Both inputs: the veto burns strand 1 first, and its backward wave annihilates the OR signal head-on. The junction then sees two single strands more than a coincidence window apart, so it never fires. This only works if the veto leads the OR signal by more than the coincidence window (≈ 2.5 s) and less than the refractory time (≈ 7 s). The delay route is sized to put it at ≈ 4 s, and the gate works with gain changed by ±20%. Inputs more than ≈ 2 s apart count as separate events, and the output fires once.
+
+**Topology.** The connections A→AND, A→OR, B→AND, B→OR, AND→junction and OR→junction, plus A, B and the output all reaching the grid edge, form K3,3, which can't be drawn in a plane. With one layer of cells, some terminal of an AND/OR-based XOR must be enclosed. In `patterns/xor.json` it is `b`, and it has a stub to make its path length match `a`'s. Composing XOR freely with other gates will eventually need a crossover.
+
+**All gate patterns share exactly the same `vars`**, so any of them can be wired together on one grid. Design new gates at the existing parameters rather than tuning bespoke values, and check them the same way: every truth-table case, every cell igniting exactly once per pulse, and nothing still lit afterwards.
 
 ### Debugging and Exploration Workflow
 

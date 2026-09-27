@@ -160,7 +160,7 @@ class SimulatorApp:
         return bool(self.state.enabled_array[xy])
 
     def strike_cell(self, cell_xy: tuple[int, int]) -> bool:
-        if self.state.enabled_array[cell_xy] and self.state.energy_array[cell_xy] >= self.config.get("MIN_STRIKE"):
+        if self.state.enabled_array[cell_xy] and self.state.energy_array[cell_xy] >= self.config.get("STRIKE_LEVEL"):
             self.state.flame_array[cell_xy] = self.config.get("STRIKE_LEVEL")
             return True
         return False

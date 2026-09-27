@@ -15,11 +15,13 @@ Each enabled cell has:
 On each simulation step:
 
 1. illumination is computed from neighbouring flame intensity,
-2. dark enabled cells ignite if illumination crosses a strike threshold,
-3. weak or exhausted flames extinguish,
+2. dark enabled cells with at least `STRIKE_LEVEL` energy ignite if illumination crosses a strike threshold,
+3. weak flames extinguish,
 4. burning cells relax toward the energy available to them,
-5. flames consume energy,
+5. flames consume energy, and a flame whose fuel runs out goes out,
 6. enabled cells refill with fresh energy.
+
+Manual strikes follow the same fuel rule: a cell needs at least `STRIKE_LEVEL` energy to be struck.
 
 The implementation uses elapsed real time rather than fixed frame steps, and the flame response is written in a time-invariant form so the dynamics are less dependent on frame rate. The workbook `timeinvariance.xlsx` contains the derivation notes behind that choice.
 
@@ -178,7 +180,7 @@ The repository includes several saved layouts:
 - `patterns/oneway.json`: a one-way ("diode") gate — a pulse crosses `a → b` but not `b → a`.
 - `patterns/and.json`: an AND gate — `out`/`edge` fire only when `a` and `b` are struck together; either alone does nothing, and nothing flows back from the output.
 - `patterns/or.json`: an OR gate — two diodes feeding a shared relay, with an output leg to the grid edge. Either input fires the output; neither input can fire the other.
-- `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~1.5 s of each other. All three terminals are on the grid edge. See "Building XOR" below.
+- `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~0.75 s of each other. All three terminals are on the grid edge. See "Building XOR" below.
 - `patterns/inhibit.json`: an inhibitory structure, described in the original notes as the closest pulse-based analogue of NOT.
 - `patterns/accel.json`: an accelerating or amplifying path experiment.
 - `patterns/osc.json`: an oscillator example.
@@ -223,7 +225,7 @@ A burning cell has a reachable equilibrium `flame_eq = (SUPPLY/S) / FLAME_CONSUM
 SUPPLY/S >= MIN_FLAME * FLAME_CONSUME   -->   at risk of a cell burning forever
 ```
 
-`SimulationConfig.stuck_on_risk()` checks this, and the app warns whenever it's true after a `load` or a parameter change. Fix it by raising `MIN_FLAME` or lowering `SUPPLY/S`, not by raising `FLAME_CONSUME` (which also lowers peak flame and erodes propagation) — and check rule 5 below when raising `MIN_FLAME`.
+`SimulationConfig.stuck_on_risk()` checks this, and the app warns whenever it's true after a `load` or a parameter change. Fix it by raising `MIN_FLAME` or lowering `SUPPLY/S`, not by raising `FLAME_CONSUME` (which also lowers peak flame and erodes propagation).
 
 ### Designing Gates From First Principles
 
@@ -241,8 +243,8 @@ The rules:
 2. **Diode/AND window:** one diagonal neighbour must *not* ignite a cell, two must: `r · f_peak < θ < 2r · f_peak`. The window is widest at σ ≈ 0.85 (r = 0.5); put θ near its geometric centre, ≈ 0.7 · f_peak, for about ±40% margin.
 3. **Hysteresis:** `STRIKE_LEVEL ≥ 2 · MIN_FLAME`, and `STRIKE_LEVEL < θ`.
 4. **No stuck-on:** `SUPPLY/S` comfortably below `MIN_FLAME · FLAME_CONSUME`.
-5. **No re-entry at junctions:** automatic ignition has no energy check, so a cell that has just gone out relights if its still-burning neighbours' combined tails reach θ. Those tails are near `MIN_FLAME`, so with `n` simultaneously-burning orthogonal neighbours you need `θ > n · MIN_FLAME` — n = 3 at any fork or T-junction — plus margin. Violating this turns junctions into oscillators. Count diagonal neighbours at weight r and any nearby parallel line (rule 6) toward n.
-6. **Keep unrelated lines ≥ 3 apart.** A fully lit line two cells away delivers about 25% of an orthogonal neighbour's illumination (`(k2/k1)(1 + 2·k1/k0)` with the 1-D kernel weights). That is enough to make a parallel line catch fire almost all at once, and to tip nearby junctions over rule 5.
+5. **No re-entry at junctions.** A cell that has just burned out must not relight while its neighbours are still burning, or junctions become oscillators. The fuel rule guarantees this: a burnt-out cell has no energy and can't ignite again until it has recovered `STRIKE_LEVEL`, which takes `STRIKE_LEVEL / SUPPLY/S` (≈ 0.8 s, several hops). By then its neighbours have burned out too. (Before the fuel rule, re-entry forced `θ > 3 · MIN_FLAME` at every T-junction, which held `MIN_FLAME` and hence recovery speed down.)
+6. **Keep unrelated lines ≥ 3 apart.** A fully lit line two cells away delivers about 25% of an orthogonal neighbour's illumination (`(k2/k1)(1 + 2·k1/k0)` with the 1-D kernel weights). That is enough to make a parallel line catch fire almost all at once.
 
 **The diode.** Narrow coupling means a cell can't reach two cells away, but an orthogonal neighbour can ignite a cell while a single diagonal one can't (rule 2). So the input line forks and wraps around the target, touching it only diagonally from two sides. Forward, the two diagonal cells burn together and ignite the target; backward, the burning target reaches each fork cell through one diagonal only, which is too weak:
 
@@ -254,18 +256,20 @@ x x . T x x x      input line on the left, T = target, output on the right
 
 **AND is the same geometry** with the two diagonal feeders coming from separate inputs, so it is one-way by construction. **OR** is two diodes feeding a shared relay, with the output branching from the relay's middle.
 
-Current shared parameters: `COUPLING_DIST=0.85 COUPLING_GAIN=6 FLAME_CONSUME=2 FLAME_INERTIA=1 MIN_FLAME=0.09 MIN_STRIKE=0.23 STRIKE_LEVEL=0.18 SUPPLY/S=0.14`, giving θ ≈ 0.35 ≈ 0.7 · f_peak ≈ 3.9 · `MIN_FLAME`, hops of ≈ 0.16 s, and a refractory time of ≈ 7.6 s. Every gate still works with `COUPLING_GAIN` changed by ±20%, and at 30–100 fps.
+Current shared parameters: `COUPLING_DIST=0.85 COUPLING_GAIN=6 FLAME_CONSUME=3 FLAME_INERTIA=1 MIN_FLAME=0.06 MIN_STRIKE=0.2 STRIKE_LEVEL=0.12 SUPPLY/S=0.144`, giving θ ≈ 0.30 ≈ 0.7 · f_peak, hops of ≈ 0.18 s, a burn of ≈ 1.1 s (a wake of ≈ 6 cells), and a refractory time of ≈ 5.9 s. Every gate still works with `COUPLING_GAIN` changed by ±20%, and at 30–100 fps.
 
-**Cells per refractory period** (refractory time ÷ hop time, ≈ 48 here) is the number that sets how long a delay line must be to hold one signal back until another has recovered. It is dimensionless, so uniform time scaling can't change it; only pulse *shape* and σ can. Narrow σ helps because with wide coupling, cells several steps back keep pushing the front forward. Rules 4 and 5 pull against each other (low `MIN_FLAME` versus fast recovery), which is what limits it.
+**The wake.** A cell burns until its fuel runs out, so the burn is set by how fast flame consumes energy (`FLAME_CONSUME` against `FLAME_INERTIA`), not by `MIN_FLAME`. Before the fuel rule, an exhausted cell kept "burning" on inertia alone, decaying from ≈ 0.34 down to `MIN_FLAME` over about τ · ln(0.34 / `MIN_FLAME`). With the τ = 1 s that slow propagation needs, that fuel-less tail was half of every burn and tripled the wake (18 cells).
+
+**Cells per refractory period** (refractory time ÷ hop time, ≈ 33 here) is the number that sets how long a delay line must be to hold one signal back until another has recovered. It is dimensionless, so uniform time scaling can't change it; only pulse *shape* and σ can. Narrow σ helps because with wide coupling, cells several steps back keep pushing the front forward. Rule 4 limits it: recovery speed `SUPPLY/S` is capped at `MIN_FLAME · FLAME_CONSUME`, and `MIN_FLAME` is capped at `STRIKE_LEVEL / 2` by rule 3.
 
 ### How the Constraints Interact
 
 Every rule above is a statement about where θ sits relative to the pulse shape, so they compete for the same range:
 
 - **Slow propagation versus margins.** A slow hop means θ sits high on flame's rising flank (rule 1). That squeezes the line's own margin, and it makes hop time very sensitive to anything that shifts θ: a ±20% change in gain moves hop time from 0.29 s to 0.12 s. Centring θ in the diode window (rule 2) is the compromise.
-- **Hysteresis versus recovery.** Rule 5 wants `MIN_FLAME` well below θ, but the stuck-on limit (rule 4) caps `SUPPLY/S` at `MIN_FLAME · FLAME_CONSUME`, so a low `MIN_FLAME` means slow recovery and long refractory times. Together these limit how few cells a delay line can have (≈ 48 per refractory period here).
-- **`STRIKE_LEVEL` does two jobs.** Keeping it ≥ 2 · `MIN_FLAME` (rule 3) gives a clean ignition, and keeping it below θ means a depleted cell that gets relit (it only ever reaches `STRIKE_LEVEL` before fizzling) can never ignite its neighbours. Those harmless fizzles show up wherever a diode target is hit twice in quick succession.
-- **Timing windows mix gain-sensitive and gain-insensitive quantities.** Path delays scale with hop time, which is very gain-sensitive. The coincidence window (≈ 2–2.5 s, set by how long two flames overlap) and the refractory time (≈ 7.6 s) are set by pulse shape and barely move. Any circuit that races two paths must put its delay near the geometric centre of the window it needs, because the hop time can vary by a factor of about 2.4 while that window only spans about 2.8×.
+- **Hysteresis versus recovery.** The stuck-on limit (rule 4) caps `SUPPLY/S` at `MIN_FLAME · FLAME_CONSUME`, and rule 3 caps `MIN_FLAME` at `STRIKE_LEVEL / 2`. A low `STRIKE_LEVEL` gives slow hops (good) but also slow recovery, so delay lines stay at ≈ 33 cells per refractory period.
+- **`STRIKE_LEVEL` does three jobs.** It is where each flame starts (so it sets hop time with θ), the fuel a cell needs before it can ignite (so it sets how long a burnt-out cell stays refractory), and, through rule 3, the ceiling on `MIN_FLAME` and so on recovery speed. Keeping it below θ also means a partly recovered cell that relights (its flame starts at `STRIKE_LEVEL` and it soon runs out of fuel) can't ignite its neighbours. Those harmless fizzles show up wherever a diode target is hit twice in quick succession.
+- **Timing windows mix gain-sensitive and gain-insensitive quantities.** Path delays scale with hop time, which is very gain-sensitive. The coincidence window (≈ 1.3 s, set by how long two flames overlap) and the refractory time (≈ 5.9 s) are set by pulse shape and barely move. Any circuit that races two paths must put its delay near the geometric centre of the window it needs, because the hop time can vary by a factor of about 2.4 across ±20% gain.
 - **Equal path lengths into a coincidence junction.** At low gain the two-diagonal margin is thin, so an AND only fires if its inputs arrive together. Give both inputs the same path length.
 
 ### Building XOR
@@ -277,14 +281,14 @@ XOR is not monotonic, so it needs inhibition. The only inhibition this medium ha
 
 One input: its pulse reaches both diode arms together and fires the diode, and the OR carries it out. Both inputs: the veto burns each diode's inner arm first. Its backward wave annihilates the input's pulse head-on, and the diode target only ever sees single arms, far enough apart in time that it never fires. Two timing conditions must hold, and both scale with hop time, which is the gain-sensitive quantity:
 
-- The veto must lead the input's pulse at the entry point by more than the coincidence window (≈ 2.5 s) and less than the refractory time. The delay lines set this to ≈ 4 s.
+- The veto must lead the input's pulse at the entry point by more than the coincidence window and less than the refractory time. Anything from ≈ 8 to over 26 hops passes the checks; the delay lines set ≈ 14 hops (≈ 2.5 s), near the middle of that range.
 - The veto's forward wave (inner arm) and its backward wave (round the split and up the outer arm) must reach the diode more than a coincidence window apart. So the veto enters close to the diode target, and the outer arm is 2 cells longer than the inner. It can't be much longer, because at low gain a single input's two arms must still arrive together.
 
-The gate works with `COUPLING_GAIN` changed by ±20% and at 30–100 fps. Inputs up to ≈ 1.5 s apart count as "both"; beyond ≈ 1.75 s the output fires once.
+The gate works with `COUPLING_GAIN` changed by ±20% and at 30–100 fps. Inputs up to ≈ 0.75 s apart count as "both"; from ≈ 1 s apart the output fires once.
 
 **Topology.** `a`, `b` and the output all sit on the grid edge. That depends on the architecture: vetoing the *merged* OR signal (connections A→AND, A→OR, B→AND, B→OR, AND→junction, OR→junction, plus all three terminals on the boundary) forms K3,3, which can't be drawn in a plane. Vetoing each input separately, before the merge, has the planar four-NAND graph: going round the outside, the order is a, a's diode, OR/out, b's diode, b, AND.
 
-**All gate patterns share exactly the same `vars`**, so any of them can be wired together on one grid. Design new gates at the existing parameters rather than tuning bespoke values, and check them the same way: every truth-table case, every cell igniting exactly once per pulse, and nothing still lit afterwards.
+**Requirements for every saved gate.** All gate patterns share exactly the same `vars`, so any of them can be wired together on one grid. Each must also keep working with a margin of error on those parameters: currently `COUPLING_GAIN` changed by ±20% and frame rates from 30 to 100 fps. Design new gates at the existing parameters rather than tuning bespoke values. If a parameter change is unavoidable, re-verify every gate against it. Check each gate the same way: every truth-table case, every cell igniting exactly once per pulse, and nothing still lit afterwards.
 
 ### Debugging and Exploration Workflow
 

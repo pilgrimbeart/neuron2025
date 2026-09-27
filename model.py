@@ -11,12 +11,12 @@ import scipy.ndimage
 DEFAULT_VARS = {
     "COUPLING_DIST": 0.85,
     "COUPLING_GAIN": 6.0,
-    "FLAME_CONSUME": 2.0,
+    "FLAME_CONSUME": 3.0,
     "FLAME_INERTIA": 1.0,
-    "MIN_FLAME": 0.09,
-    "MIN_STRIKE": 0.23,
-    "STRIKE_LEVEL": 0.18,
-    "SUPPLY/S": 0.14,
+    "MIN_FLAME": 0.06,
+    "MIN_STRIKE": 0.2,
+    "STRIKE_LEVEL": 0.12,
+    "SUPPLY/S": 0.144,
 }
 
 
@@ -110,14 +110,13 @@ class State:
         )
 
         self.flame_array[
-            (self.enabled_array == True)
+            self.enabled_array
             & (self.flame_array == 0)
+            & (self.energy_array >= config.get("STRIKE_LEVEL"))
             & (self.illumination_array >= config.get("MIN_STRIKE"))
         ] = config.get("STRIKE_LEVEL")
 
-        self.flame_array[
-            (self.flame_array < config.get("MIN_FLAME")) | (self.energy_array == 0)
-        ] = 0
+        self.flame_array[self.flame_array < config.get("MIN_FLAME")] = 0
 
         flame_inertia = config.get("FLAME_INERTIA")
         self.flame_array = np.where(
@@ -128,10 +127,10 @@ class State:
             self.flame_array,
         )
 
-        self.energy_array = np.maximum(
-            0,
-            self.energy_array - self.flame_array * config.get("FLAME_CONSUME") * delta_s,
-        )
+        self.energy_array -= self.flame_array * config.get("FLAME_CONSUME") * delta_s
+        exhausted = self.energy_array <= 0
+        self.flame_array[exhausted] = 0
+        self.energy_array[exhausted] = 0
 
         self.energy_array[self.enabled_array] = np.minimum(
             1,

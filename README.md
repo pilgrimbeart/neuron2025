@@ -178,7 +178,7 @@ The repository includes several saved layouts:
 - `patterns/oneway.json`: a one-way ("diode") gate — a pulse crosses `a → b` but not `b → a`.
 - `patterns/and.json`: an AND gate — `out`/`edge` fire only when `a` and `b` are struck together; either alone does nothing, and nothing flows back from the output.
 - `patterns/or.json`: an OR gate — two diodes feeding a shared relay, with an output leg to the grid edge. Either input fires the output; neither input can fire the other.
-- `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~1.75 s of each other. See "Building XOR" below.
+- `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~1.5 s of each other. All three terminals are on the grid edge. See "Building XOR" below.
 - `patterns/inhibit.json`: an inhibitory structure, described in the original notes as the closest pulse-based analogue of NOT.
 - `patterns/accel.json`: an accelerating or amplifying path experiment.
 - `patterns/osc.json`: an oscillator example.
@@ -270,15 +270,19 @@ Every rule above is a statement about where θ sits relative to the pulse shape,
 
 ### Building XOR
 
-XOR is not monotonic, so it needs inhibition. The only inhibition this medium has is refractoriness: a region that has just burned can't carry a wave. The gate is:
+XOR is not monotonic, so it needs inhibition. The only inhibition this medium has is refractoriness: a region that has just burned can't carry a wave. `patterns/xor.json` has the same structure as the classic four-NAND XOR, `out = (a inhibited by AND) OR (b inhibited by AND)`:
 
-- an **OR** of the inputs, whose output travels a long route (the delay line) to a **split** into two strands four cells apart;
-- a **coincidence junction** (the AND/diode geometry) where the two strands meet diagonally, feeding the output line;
-- an **AND** of the inputs (the veto), whose output joins strand 1 close to the junction.
+- Each input feeds an **AND** along the bottom edge, and separately takes a serpentine **delay line** up to its own **long-armed diode**. The two diodes feed the **OR** relay, and the output leaves from the relay's middle to the top edge.
+- The AND's output (the veto) runs up the middle and **fans out** to each diode's inner arm, close to the diode target. Each branch passes through a small one-way diode, so that one input's pulse can't run back up the veto line and out of the other input.
 
-One input: the OR signal arrives on both strands together and fires the junction. Both inputs: the veto burns strand 1 first, and its backward wave annihilates the OR signal head-on. The junction then sees two single strands more than a coincidence window apart, so it never fires. This only works if the veto leads the OR signal by more than the coincidence window (≈ 2.5 s) and less than the refractory time (≈ 7 s). The delay route is sized to put it at ≈ 4 s, and the gate works with gain changed by ±20%. Inputs more than ≈ 2 s apart count as separate events, and the output fires once.
+One input: its pulse reaches both diode arms together and fires the diode, and the OR carries it out. Both inputs: the veto burns each diode's inner arm first. Its backward wave annihilates the input's pulse head-on, and the diode target only ever sees single arms, far enough apart in time that it never fires. Two timing conditions must hold, and both scale with hop time, which is the gain-sensitive quantity:
 
-**Topology.** The connections A→AND, A→OR, B→AND, B→OR, AND→junction and OR→junction, plus A, B and the output all reaching the grid edge, form K3,3, which can't be drawn in a plane. With one layer of cells, some terminal of an AND/OR-based XOR must be enclosed. In `patterns/xor.json` it is `b`, and it has a stub to make its path length match `a`'s. Composing XOR freely with other gates will eventually need a crossover.
+- The veto must lead the input's pulse at the entry point by more than the coincidence window (≈ 2.5 s) and less than the refractory time. The delay lines set this to ≈ 4 s.
+- The veto's forward wave (inner arm) and its backward wave (round the split and up the outer arm) must reach the diode more than a coincidence window apart. So the veto enters close to the diode target, and the outer arm is 2 cells longer than the inner. It can't be much longer, because at low gain a single input's two arms must still arrive together.
+
+The gate works with `COUPLING_GAIN` changed by ±20% and at 30–100 fps. Inputs up to ≈ 1.5 s apart count as "both"; beyond ≈ 1.75 s the output fires once.
+
+**Topology.** `a`, `b` and the output all sit on the grid edge. That depends on the architecture: vetoing the *merged* OR signal (connections A→AND, A→OR, B→AND, B→OR, AND→junction, OR→junction, plus all three terminals on the boundary) forms K3,3, which can't be drawn in a plane. Vetoing each input separately, before the merge, has the planar four-NAND graph: going round the outside, the order is a, a's diode, OR/out, b's diode, b, AND.
 
 **All gate patterns share exactly the same `vars`**, so any of them can be wired together on one grid. Design new gates at the existing parameters rather than tuning bespoke values, and check them the same way: every truth-table case, every cell igniting exactly once per pulse, and nothing still lit afterwards.
 

@@ -197,23 +197,16 @@ class State:
             self.illumination_array = shift_y(self.illumination_array)
 
     def paste(self, source_state: "State") -> None:
+        """Copy source_state in, centred: source cell (x, y) lands at (x, y) + centre_offset."""
+        offset = centre_offset(source_state.grid_size, self.grid_size)
+
         def paste_array(foreground: np.ndarray, background: np.ndarray) -> None:
-            bg_h, bg_w = background.shape
-            fg_h, fg_w = foreground.shape
-
-            start_y = max(0, (bg_h - fg_h) // 2)
-            start_x = max(0, (bg_w - fg_w) // 2)
-            end_y = min(bg_h, start_y + fg_h)
-            end_x = min(bg_w, start_x + fg_w)
-
-            fg_start_y = max(0, -((bg_h - fg_h) // 2))
-            fg_start_x = max(0, -((bg_w - fg_w) // 2))
-            fg_end_y = fg_start_y + (end_y - start_y)
-            fg_end_x = fg_start_x + (end_x - start_x)
-
-            background[start_y:end_y, start_x:end_x] = foreground[
-                fg_start_y:fg_end_y, fg_start_x:fg_end_x
-            ]
+            dst, src = [], []
+            for off, fg_len, bg_len in zip(offset, foreground.shape, background.shape):
+                start, end = max(0, off), min(bg_len, off + fg_len)
+                dst.append(slice(start, end))
+                src.append(slice(start - off, end - off))
+            background[tuple(dst)] = foreground[tuple(src)]
 
         paste_array(source_state.enabled_array, self.enabled_array)
         paste_array(source_state.energy_array, self.energy_array)
@@ -222,6 +215,10 @@ class State:
 
     def clone(self) -> "State":
         return copy.deepcopy(self)
+
+
+def centre_offset(old_size: tuple[int, int], new_size: tuple[int, int]) -> tuple[int, int]:
+    return ((new_size[0] - old_size[0]) // 2, (new_size[1] - old_size[1]) // 2)
 
 
 def resized_state(source_state: State, new_grid_size: tuple[int, int]) -> State:

@@ -11,7 +11,7 @@ import pygame
 
 from actions import FOCUS_ORDER, build_help_lines, dispatch_keydown
 from headless import grid_summary, probe_by_label
-from model import SimulationConfig, State, resized_state
+from model import SimulationConfig, State, centre_offset, resized_state
 from persistence import list_snapshot_names, load_snapshot, save_snapshot
 from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
@@ -227,9 +227,10 @@ class SimulatorApp:
 
     def resize_grid(self, grid_size: tuple[int, int]) -> None:
         self.push_undo_state()
+        dx, dy = centre_offset(self.state.grid_size, grid_size)
         self.state = resized_state(self.state, grid_size)
         self.cells_panel.set_grid_size(grid_size)
-        self.chart_panel.shift_probes(0, 0, self.state)
+        self.chart_panel.shift_probes(dx, dy, self.state)
 
     def random_strike(self) -> None:
         self.push_undo_state()

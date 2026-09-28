@@ -247,12 +247,8 @@ class ConsolePanel:
         if char == chr(8):
             self.input = self.input[0:-1]
         elif char == chr(13):
-            self.add_console_char(">")
-            for existing_char in self.input:
-                self.add_console_char(existing_char)
-            self.scroll()
-            self.execute(self.input)
-            self.input = ""
+            command, self.input = self.input, ""
+            self.execute(command)
         else:
             self.input += char
 

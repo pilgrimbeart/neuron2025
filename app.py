@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pygame
 
-from actions import FOCUS_ORDER, build_help_lines, dispatch_keydown
+from actions import COMMANDS, FOCUS_ORDER, build_help_lines, dispatch_keydown, find_command
 from headless import grid_summary, probe_by_label
 from model import SimulationConfig, State, centre_offset, resized_state
 from persistence import list_snapshot_names, load_snapshot, save_snapshot
@@ -79,7 +79,7 @@ class SimulatorApp:
             self.screen,
             (self.screen_height, int(self.screen_height / 2)),
             (self.screen_width - self.screen_height, self.screen_height - int(self.screen_height / 2)),
-            self.execute_console_command,
+            self.submit,
         )
         self.help_overlay = HelpOverlay(self.screen)
         self.help_lines = build_help_lines()
@@ -110,8 +110,9 @@ class SimulatorApp:
     def toggle_help(self) -> None:
         self.help_visible = not self.help_visible
 
-    def toggle_pause(self) -> None:
-        self.paused = not self.paused
+    def set_paused(self, paused: bool) -> None:
+        self.paused = paused
+        print("Paused" if paused else "Resumed")
 
     def single_step(self) -> None:
         self.paused = True
@@ -146,6 +147,7 @@ class SimulatorApp:
             return
         snapshot = self.undo_stack.pop()
         self.restore_undo_snapshot(snapshot)
+        print("Undone")
 
     def current_cell(self) -> tuple[bool, tuple[int, int]]:
         hit, grid_x, grid_y = self.cells_panel.find_cell(self.last_mouse_pos)
@@ -164,18 +166,6 @@ class SimulatorApp:
             self.state.flame_array[cell_xy] = self.config.get("STRIKE_LEVEL")
             return True
         return False
-
-    def add_probe_under_mouse(self) -> None:
-        hit, cell_xy = self.current_cell()
-        if hit:
-            self.push_undo_state()
-            self.chart_panel.add_probe(cell_xy)
-
-    def delete_probe_under_mouse(self) -> None:
-        hit, cell_xy = self.current_cell()
-        if hit:
-            self.push_undo_state()
-            self.chart_panel.delete_probe(cell_xy)
 
     def name_probe_under_mouse(self) -> None:
         hit, cell_xy = self.current_cell()
@@ -207,30 +197,34 @@ class SimulatorApp:
         self.push_undo_state()
         self.state.set_all_enableds(False)
         self.state.reset_energy_and_flame()
+        print("Cleared")
 
     def fill_enabled(self) -> None:
         self.push_undo_state()
         self.state.set_all_enableds(True)
         self.state.reset_energy_and_flame()
+        print("Filled")
 
     def zero_activity(self) -> None:
         self.push_undo_state()
         self.state.reset_energy_and_flame()
+        print("Settled: flame off, energy full where enabled")
 
-    def increase_grid_size(self) -> None:
-        if self.state.grid_size[0] < 1024:
-            self.resize_grid((self.state.grid_size[0] * 2, self.state.grid_size[1] * 2))
-
-    def decrease_grid_size(self) -> None:
-        if self.state.grid_size[0] > 1:
-            self.resize_grid((int(self.state.grid_size[0] / 2), int(self.state.grid_size[1] / 2)))
-
-    def resize_grid(self, grid_size: tuple[int, int]) -> None:
+    def console_grid(self, size_str: str) -> None:
+        try:
+            size = int(size_str)
+        except ValueError:
+            print(f"Invalid size '{size_str}'")
+            return
+        if not 1 <= size <= 1024:
+            print(f"Size {size} out of range 1..1024")
+            return
         self.push_undo_state()
-        dx, dy = centre_offset(self.state.grid_size, grid_size)
-        self.state = resized_state(self.state, grid_size)
-        self.cells_panel.set_grid_size(grid_size)
+        dx, dy = centre_offset(self.state.grid_size, (size, size))
+        self.state = resized_state(self.state, (size, size))
+        self.cells_panel.set_grid_size(self.state.grid_size)
         self.chart_panel.shift_probes(dx, dy, self.state)
+        print(f"Grid is now {size}x{size}")
 
     def random_strike(self) -> None:
         self.push_undo_state()
@@ -238,10 +232,16 @@ class SimulatorApp:
         for _ in range(count):
             self.strike_cell((random.randrange(self.state.grid_size[0]), random.randrange(self.state.grid_size[1])))
 
-    def shift_state(self, dx: int, dy: int) -> None:
+    def console_shift(self, dx_str: str, dy_str: str) -> None:
+        try:
+            dx, dy = int(dx_str), int(dy_str)
+        except ValueError:
+            print(f"Invalid shift '{dx_str} {dy_str}'")
+            return
         self.push_undo_state()
         self.state.shift(dx, dy)
         self.chart_panel.shift_probes(dx, dy, self.state)
+        print(f"Shifted by ({dx}, {dy})")
 
     def split_shift_state(self, dx: int, dy: int) -> None:
         hit, cell_xy = self.current_cell()
@@ -279,11 +279,8 @@ class SimulatorApp:
         self.config.select_next()
         self.print_var_list()
 
-    def scale_selected_var(self, factor: float) -> None:
-        self.push_undo_state()
-        self.config.scale_selected(factor)
-        self.print_var_list()
-        self.check_config_safety()
+    def submit_selected_var_scaled(self, factor: float) -> None:
+        self.submit(f"set {self.config.selected_key()} {self.config.get_selected() * factor:.6g}")
 
     def print_var_list(self) -> None:
         for line in self.config.describe_lines():
@@ -467,71 +464,30 @@ class SimulatorApp:
         i = float(self.state.illumination_array[xy])
         print(f"{xy} enabled={enabled} energy={e:.4f} flame={f:.4f} illumination={i:.4f}")
 
+    def print_commands(self) -> None:
+        print("Console commands:")
+        for command in COMMANDS:
+            print(f"{command.usage:20} {command.description}")
+
+    def submit(self, string: str) -> None:
+        """Echo a command as if typed at the console, then run it."""
+        print(f"> {string}")
+        self.execute_console_command(string)
+
+    def submit_at_mouse(self, template: str) -> None:
+        hit, (x, y) = self.current_cell()
+        if hit:
+            self.submit(template.format(x=x, y=y))
+
     def execute_console_command(self, string: str) -> None:
         words = string.strip().split()
         if not words:
             return
-        if words[0] == "ls":
-            self.list_snapshots()
-        elif words[0] in {"help", "?"}:
-            print("Console commands:")
-            print("ls")
-            print("save NAME")
-            print("load NAME")
-            print("name INDEX NAME")
-            print("strike X Y | strike LABEL")
-            print("set VAR VALUE")
-            print("run SECONDS")
-            print("stats")
-            print("probes")
-            print("inspect X Y")
-            print("params")
-            print("quit")
-            print("clear")
-            print("enable X Y")
-            print("disable X Y")
-            print("settle")
-            print("probe X Y")
-            print("deleteprobe X Y")
-        elif words[0] == "save" and len(words) >= 2:
-            self.save_snapshot(words[1])
-        elif words[0] == "load" and len(words) >= 2:
-            self.try_load_snapshot(words[1])
-        elif words[0] == "name" and len(words) >= 3:
-            self.name_probe(words[1], " ".join(words[2:]))
-        elif words[0] == "strike" and len(words) == 3:
-            self.console_strike_xy(words[1], words[2])
-        elif words[0] == "strike" and len(words) == 2:
-            self.console_strike(words[1])
-        elif words[0] == "set" and len(words) == 3:
-            self.console_set(words[1], words[2])
-        elif words[0] == "run" and len(words) == 2:
-            self.console_run(words[1])
-        elif words[0] == "stats" and len(words) == 1:
-            self.console_stats()
-        elif words[0] == "probes" and len(words) == 1:
-            self.console_probes()
-        elif words[0] == "inspect" and len(words) == 3:
-            self.console_inspect(words[1], words[2])
-        elif words[0] == "params" and len(words) == 1:
-            self.print_var_list()
-        elif words[0] == "quit" and len(words) == 1:
-            self.request_quit()
-        elif words[0] == "clear" and len(words) == 1:
-            self.clear_enabled()
-        elif words[0] == "enable" and len(words) == 3:
-            self.console_enable(words[1], words[2], True)
-        elif words[0] == "disable" and len(words) == 3:
-            self.console_enable(words[1], words[2], False)
-        elif words[0] == "settle" and len(words) == 1:
-            self.zero_activity()
-            print("Settled: flame off, energy full where enabled")
-        elif words[0] == "probe" and len(words) == 3:
-            self.console_probe(words[1], words[2])
-        elif words[0] == "deleteprobe" and len(words) == 3:
-            self.console_deleteprobe(words[1], words[2])
-        else:
+        command = find_command(words)
+        if command is None:
             print(f"Unrecognised command '{string}'")
+            return
+        command.handler(self, words[1:])
 
     def handle_mouse_button_down(self, event: pygame.event.Event) -> None:
         pos = pygame.mouse.get_pos()

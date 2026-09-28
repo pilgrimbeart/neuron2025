@@ -96,31 +96,31 @@ The grid view can show the combined state or isolate one field:
 ### Global Keys
 
 - `Tab`: cycle focus between grid, chart, and console.
-- `Esc` or `Ctrl+C`: quit.
+- `Esc` or `Ctrl+C`: quit (`quit`).
 - `h` or `?`: toggle the help overlay.
-- `u` or `U`: undo the last edit. Undo depth is unlimited.
+- `u` or `U`: undo the last edit (`undo`). Undo depth is unlimited.
 - `v`: start or stop MP4 recording of the whole window into `videos/`.
 
 ### Keyboard While Grid Has Focus
 
-- `p`: pause or resume.
+- `p`: pause or resume (`pause` / `resume`).
 - `Space`: advance one simulation step while paused.
-- `c`: clear the enabled pattern and zero activity.
-- `f`: fill the whole grid with enabled cells.
-- `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled. Useful before a training run so no residual activity history (e.g. from a loaded snapshot) leaks into a fresh trial.
+- `c`: clear the enabled pattern and zero activity (`clear`).
+- `f`: fill the whole grid with enabled cells (`fill`).
+- `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled (`settle`). Useful before a trial so no residual activity (e.g. from a loaded snapshot) leaks in.
 - `r`: randomly strike roughly one tenth of the cells.
-- `a`: add a chart probe at the cell under the mouse.
-- `d`: delete a chart probe at the cell under the mouse.
+- `a`: add a chart probe at the cell under the mouse (`probe X Y`).
+- `d`: delete a chart probe at the cell under the mouse (`deleteprobe X Y`).
 - `n`: name the chart probe at the cell under the mouse (focuses the console with a `name` command pre-filled; type the name and press Enter).
-- `Shift` + arrow keys: shift the whole pattern and its probes.
+- `Shift` + arrow keys: shift the whole pattern and its probes (`shift DX DY`).
 - `Ctrl` + `Shift` + arrow keys: split at the cursor by inserting a blank row or column and moving only the cells on that side of the cursor.
-- `=`: zoom in by reducing grid size.
-- `-`: zoom out by increasing grid size.
+- `=`: zoom in by halving the grid size, keeping the pattern centred (`grid SIZE`).
+- `-`: zoom out by doubling the grid size, keeping the pattern centred (`grid SIZE`).
 - `e`: toggle energy-only view.
 - `i`: toggle illumination-only view.
 - arrow keys: select and adjust model parameters.
   - `Up` / `Down`: choose which parameter is selected,
-  - `Left` / `Right`: scale the selected parameter down or up by 5%.
+  - `Left` / `Right`: scale the selected parameter down or up by 5% (`set VAR VALUE`).
 
 ### Keyboard While Chart Has Focus
 
@@ -131,27 +131,35 @@ The grid view can show the combined state or isolate one field:
 ### Console Commands
 
 ```text
-help
-?
-ls
-save NAME
-load NAME
-name INDEX NAME
-strike X Y | strike LABEL
-set VAR VALUE
-run SECONDS
-stats
-probes
-inspect X Y
-params
-quit
-clear
-enable X Y
-disable X Y
-settle
-probe X Y
-deleteprobe X Y
+help                 List console commands
+ls                   List saved snapshots
+save NAME            Save the current snapshot
+load NAME            Load a snapshot
+name INDEX NAME...   Name a probe (shown on grid instead of its index)
+strike LABEL         Strike the cell under a labelled probe
+strike X Y           Strike a cell
+set VAR VALUE        Set a parameter
+run SECONDS          Pause, advance by SECONDS immediately, stay paused
+pause                Pause the simulation
+resume               Resume the simulation
+stats                Print grid-wide activity summary
+probes               Print each probe's live energy/flame/illumination
+inspect X Y          Print one cell's live energy/flame/illumination
+params               Print the current parameter values
+clear                Clear the enabled pattern and zero activity
+fill                 Enable every cell
+enable X Y           Enable a cell
+disable X Y          Disable a cell
+settle               Flame off, energy full where enabled
+probe X Y            Add a chart probe
+deleteprobe X Y      Delete the chart probe at a cell
+grid SIZE            Resize the grid to SIZE x SIZE, keeping the pattern centred
+shift DX DY          Shift the whole pattern and its probes
+undo                 Undo the last change
+quit                 Quit the simulator
 ```
+
+Commands are defined once, in `actions.COMMANDS`, which also generates `help` and the help overlay. Keys that do the same thing as a command (shown in brackets above) submit that command, so it is echoed as `> command` exactly as if typed, and appears in `control_out.log`.
 
 This works with `patterns/*.json`, so `load xor` reads `patterns/xor.json`.
 When the console has focus, normal typing stays local to the console; `Tab` and `Esc` still work globally.
@@ -181,6 +189,7 @@ The repository includes several saved layouts:
 - `patterns/and.json`: an AND gate — `out`/`edge` fire only when `a` and `b` are struck together; either alone does nothing, and nothing flows back from the output.
 - `patterns/or.json`: an OR gate — two diodes feeding a shared relay, with an output leg to the grid edge. Either input fires the output; neither input can fire the other.
 - `patterns/xor.json`: an XOR gate — `out`/`edge` fire when exactly one of `a`, `b` is struck; nothing fires when both are struck within ~0.75 s of each other. All three terminals are on the grid edge. See "Building XOR" below.
+- `patterns/cross.json` (48×48): a crossing — a pulse from `a` (left edge) leaves only at `a_out` (right edge), and a pulse from `b` (top edge) leaves only at `b_out` (bottom edge). Simultaneous pulses leave at both; otherwise keep them ≈ 10 s apart. See "Crossing Two Pulse Streams" below.
 - `patterns/inhibit.json`: an inhibitory structure, described in the original notes as the closest pulse-based analogue of NOT.
 - `patterns/accel.json`: an accelerating or amplifying path experiment.
 - `patterns/osc.json`: an oscillator example.
@@ -287,6 +296,27 @@ One input: its pulse reaches both diode arms together and fires the diode, and t
 The gate works with `COUPLING_GAIN` changed by ±20% and at 30–100 fps. Inputs up to ≈ 0.75 s apart count as "both"; from ≈ 1 s apart the output fires once.
 
 **Topology.** `a`, `b` and the output all sit on the grid edge. That depends on the architecture: vetoing the *merged* OR signal (connections A→AND, A→OR, B→AND, B→OR, AND→junction, OR→junction, plus all three terminals on the boundary) forms K3,3, which can't be drawn in a plane. Vetoing each input separately, before the merge, has the planar four-NAND graph: going round the outside, the order is a, a's diode, OR/out, b's diode, b, AND.
+
+### Crossing Two Pulse Streams
+
+**No single-layer crossing can be free of interference.** With short-range coupling, a pulse only moves between orthogonal neighbours, or jumps one empty cell through a diagonal pair (and that gap cell is enclosed by the pulse's own cells). So a's route from the left edge to the right edge is an unbroken barrier, and b's route from top to bottom must share cells with it or run orthogonally alongside it. Running alongside means a's pulse ignites b's line. Sharing cells means the shared cells are refractory for a while after either pulse. Wider coupling doesn't help, because anything that throws enough light across a's line lights a's line at least as strongly. Every crossing therefore has a dead time of about one refractory period.
+
+**`patterns/cross.json` routes correctly outside that dead time, and for simultaneous pulses.**
+
+- **Routing.** a and b enter an L-shaped relay at its two ends (each through a diode). The merged pulse reaches two inhibit units, each a long-armed diode like the ones in XOR. The unit leading right to `a_out` is vetoed by b; the one leading down to `b_out` is vetoed by a. b's veto runs through the top-right quarter of the grid and a's through the bottom-left, so nothing crosses and all four terminals sit on the edges. A small 8-cell bump on each input, after its veto branch, gives the veto its ≈ 14-hop lead.
+- **The "both" case.** Without help, simultaneous pulses veto each other and nothing comes out. So the leg to each inhibit unit attaches near the *opposite* input's end of the relay: the `b_out` leg near a's end, the `a_out` leg near b's end. A single pulse reaches its near leg at once and the far leg only after crossing the relay (≈ 16 hops, longer than a coincidence window at any gain in range). Simultaneous pulses reach both legs together. A spur from each leg ends diagonally beside a junction `both` (the AND geometry), which therefore fires only for simultaneous pulses. Its output feeds both output lines through one-way diodes, beyond the vetoed units.
+
+It works with `COUPLING_GAIN` changed by ±20% and at 30–100 fps, with no pulse ever leaving through an input. With both inputs struck, measured by how far apart the pulses are:
+
+| separation | result |
+|---|---|
+| ≤ 0.5 s (≤ 1 s if a is second) | both outputs fire, via `both` |
+| 0.75–3 s | both pulses lost: outside the coincidence window, but each veto still catches the other's pulse |
+| 4–8 s | the first is routed, the second is lost |
+| ≈ 8.5–9 s | the second is **misrouted** to the first's output: its veto reaches an arm that is still recovering, relights only the entry cell, and the merged pulse gets through once that cell has recovered |
+| ≥ 9.5 s | both routed correctly |
+
+Routing each input across the relay to its output makes the dead time about 3 s longer than without the `both` detector. That cost is unavoidable in this design, because the relay crossing must outlast the coincidence window. A crossing that handles every separation correctly is impossible here (see above). Three XORs (c = a⊕b, then `a_out` = c⊕b and `b_out` = c⊕a) would also give simultaneous pulses, at roughly three times the size, and would still have a dead time.
 
 **Requirements for every saved gate.** All gate patterns share exactly the same `vars`, so any of them can be wired together on one grid. Each must also keep working with a margin of error on those parameters: currently `COUPLING_GAIN` changed by ±20% and frame rates from 30 to 100 fps. Design new gates at the existing parameters rather than tuning bespoke values. If a parameter change is unavoidable, re-verify every gate against it. Check each gate the same way: every truth-table case, every cell igniting exactly once per pulse, and nothing still lit afterwards.
 

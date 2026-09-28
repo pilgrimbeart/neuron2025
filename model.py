@@ -41,17 +41,11 @@ class SimulationConfig:
     def get_selected(self) -> float:
         return self.vars[self.selected_key()]
 
-    def set_selected(self, value: float) -> None:
-        self.vars[self.selected_key()] = float(value)
-
     def select_previous(self) -> None:
         self.selected = (self.selected - 1) % len(self.vars)
 
     def select_next(self) -> None:
         self.selected = (self.selected + 1) % len(self.vars)
-
-    def scale_selected(self, factor: float) -> None:
-        self.set_selected(self.get_selected() * factor)
 
     def update_from_dict(self, values: dict[str, float]) -> None:
         for key, value in values.items():

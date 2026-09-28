@@ -35,3 +35,18 @@ Alternatives we considered and why we settled where we did, so we don't re-litig
 - **With ready-only learning, a junction stops learning the instant it fires,** so its first success has zero margin. Margin grows with further pairings (each fires a little earlier on the rising light), so train for a fixed number of pairings, not until first success.
 - **Learning speed scales with gain²** (light and teaching signal each scale with gain): −20% gain learns about 2.5× slower.
 - Letting burning cells keep strengthening (to build margin) strengthened the teacher's own line too, so L's pulse arrived earlier and fell out of step with A.
+
+## What is designed and what is learned (as of learn1/learn2)
+
+- Designed by hand: junction geometry (input ends diagonally beside the junction, ≈ 0.7 × threshold), transducer placement (two cells from the junction), matched path lengths so input and teacher coincide, and a teacher that fires at exactly the right moment.
+- Learned: only whether each designed junction conducts.
+- So the designer still does most of the work. Next steps remove pieces of it: a teacher that arrives *after* the action (needs an eligibility trace), then junctions nobody designed, then teaching with no teacher at all.
+
+## Reward timing: traces, not order
+
+- Anticipating a reward and receiving it are the same signal (dopamine reward-prediction error: after learning, the burst moves to the earliest reliable predictor). So the rule shouldn't care whether the teacher comes before or after the activity, only whether they're close in time.
+- Each cell keeps a fading trace of the brightest recent light and teaching signal it received (peak-hold, fading with `TRACE_TIME`); learning uses the traces. A near miss now leaves a wake, which energy alone can't (a cell that doesn't fire never uses energy).
+- Traces broke the teacher again: the transducer's feeder recovers enough to ignite (`STRIKE_LEVEL`) about 0.8 s after burning out, while the teaching trace still lingers. Requiring full energy ("at rest") fixed that, but then a junction that fired on the input was refractory when a late teacher arrived, and couldn't be credited. Splitting eligibility fixed both: every cell strengthens for light it received; only cells at rest weaken.
+- `TRACE_TIME` sets how close counts as "together". 2 s gives a robust window from 0.5 s early to 1.5 s late. 4 s widened it, but the trace was still about 17% strong when the feeder fully recovered, breaking learn1.
+- Noise will matter (exploration: letting near-miss paths occasionally fire), but not yet: it makes training non-deterministic. Noise on received light would be targeted (only near misses fire), and would need its own timescale to stay frame-rate independent.
+- Possible later: make ignition itself integrate light (like a membrane potential), so the trace and the firing mechanism are one; or hold a spread of activation levels per cell. Both change every gate's dynamics, so parked.

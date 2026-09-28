@@ -25,7 +25,8 @@ On each simulation step (this is the whole of `physics.py`):
 4. burning cells relax toward the energy available to them,
 5. flames consume energy, and a flame whose fuel runs out goes out,
 6. enabled cells refill with fresh energy,
-7. learning: a *ready* cell (dark, and with at least `STRIKE_LEVEL` energy) that is receiving teaching signal changes its weight — strengthening where there is light brighter than the teaching signal, weakening where there is teaching signal in the dark (see "Learning" below).
+7. each cell keeps a fading memory (trace) of the brightest recent light and teaching signal it received,
+8. learning: under a recent teaching signal, a cell that recently received light strengthens, and a cell at rest in the dark weakens (see "Learning" below).
 
 Manual strikes follow the same fuel rule: a cell needs at least `STRIKE_LEVEL` energy to be struck.
 
@@ -340,19 +341,22 @@ Routing each input across the relay to its output makes the dead time about 3 s 
 
 ### Learning
 
-The rule (step 7 of `physics.py`) for a *ready* cell receiving teaching signal `M`, with illumination `I`:
+The rule (step 8 of `physics.py`) uses two fading traces per cell: `L`, the brightest recent illumination, and `T`, the brightest recent teaching signal. Each follows its signal up at once and otherwise fades with time constant `TRACE_TIME` (2 s).
 
 ```
-weight changes at   M * (LEARN_RATE * I  -  UNLEARN_RATE * M)     kept within WEIGHT_MIN..WEIGHT_MAX
+every cell strengthens at   LEARN_RATE   * T * L      credit for light received, whether it then fired or not
+a cell at rest weakens at   UNLEARN_RATE * T * T      teaching signal in the dark (at rest = dark, full energy)
+weight kept within WEIGHT_MIN..WEIGHT_MAX
 ```
 
-- Light brighter than the teaching signal (by `UNLEARN_RATE / LEARN_RATE` = 1.5) strengthens; teaching signal in the dark weakens. Both terms scale alike with coupling gain, so the balance point doesn't move with it.
+- Light and teaching signal count as together if they fall within a couple of seconds of each other, in either order: the teacher can come up to about 0.5 s before the input or 1.5 s after it at every gain from −20% to +20% (about −1.5 s to +2 s at nominal gain). So a reward can anticipate the action or follow it.
+- Strengthening credits every cell that received light, including ones that fired: a reward after an action reaches the cells that took it. Weakening applies only to cells at rest, which keeps it on idle junctions and spares the teacher's own line (refractory while its teaching signal lingers).
+- Both terms scale alike with coupling gain, so the balance point (`UNLEARN_RATE / LEARN_RATE` = 1.5) doesn't move with it.
 - Only transducers emit teaching signal, so nothing learns anywhere else: every other pattern is unaffected.
-- Only ready cells learn: a weight only matters at the moment a cell ignites, and excluding burning and refractory cells stops the teacher's own line from being re-weighted.
 
 The learning junction (`learn1`, and each half of `learn2`): the input line ends diagonally beside a junction cell, giving it about 0.7× the ignition threshold, so an untrained input stops there. The teacher `l` ends in a transducer two cells from the junction. It has to be that far: light and teaching signal share a reach, so a transducer close enough to teach the junction is lit by it just as strongly, and a closer one gets ignited by the junction's own firing and re-teaches whatever just happened. Pulsing the input with `l` lights the junction while the teaching signal is on it, so its weight rises until the input alone can ignite it. In `learn2`, the idle junction sits in the teaching signal with no light, so it weakens: that's the competition. Use `w` to watch the weights.
 
-The training protocols are in `learn.py`; `verify.py` runs them with the same margins as the gates (learn at every gain from −20% to +20%, take 1–7 pairings, switch, retain through use, never pass from `l` alone). What was tried and why this rule won is in `LESSONS.md`.
+The training protocols are in `learn.py`; `verify.py` runs them with the same margins as the gates (learn within 8 pairings at every gain from −20% to +20%, switch, retain through use, never pass from `l` alone), with the teacher simultaneous, 0.5 s early and 1 s late. What was tried and why this rule won is in `LESSONS.md`.
 
 ### Regression Suite
 

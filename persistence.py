@@ -33,10 +33,7 @@ def save_snapshot(
 ) -> None:
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     obj = {
-        "kind": state.kind_array.tolist(),
-        "energy": state.energy_array.tolist(),
-        "flame": state.flame_array.tolist(),
-        "weight": state.weight_array.tolist(),
+        **{name: getattr(state, f"{name}_array").tolist() for name in State.SAVED},
         "probes": [{"xy": list(p["xy"]), **({"label": p["label"]} if p.get("label") else {})} for p in probes],
         "vars": copy.deepcopy(config.vars),
     }
@@ -49,10 +46,8 @@ def load_snapshot(filename: str) -> tuple[State, list[dict], dict[str, float]]:
         obj = json.load(handle)
 
     state = State((len(obj["kind"]), len(obj["kind"][0])))
-    state.kind_array = np.array(obj["kind"], dtype=np.int8)
-    state.energy_array = np.array(obj["energy"], dtype=float)
-    state.flame_array = np.array(obj["flame"], dtype=float)
-    state.weight_array = np.array(obj["weight"], dtype=float)
+    for name in State.SAVED:
+        setattr(state, f"{name}_array", np.array(obj[name], dtype=np.int8 if name == "kind" else float))
 
     probes = obj.get("probes", [])
     for probe in probes:

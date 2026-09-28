@@ -36,7 +36,8 @@ CASES = {
     'learn1': [(['a'], {'o': 0}), (['l'], {'o': 0})],                   # untrained
     'learn2': [(['a'], {'o': 0}), (['b'], {'o': 0}), (['l'], {'o': 0})],
 }
-TRAINING = {'learn1': learn.train_learn1, 'learn2': learn.train_learn2}
+# training protocol and the teacher offsets (seconds after the input; negative = before) to train with
+TRAINING = {'learn1': (learn.train_learn1, [None]), 'learn2': (learn.train_learn2, [0.0, -0.5, 1.0])}
 KEEPS_RUNNING = {'osc'}
 SECONDS = {'cross': 40, 'osc': 60}
 VARIANTS = [(1.0, 50), (0.8, 50), (1.2, 50), (1.0, 30), (1.0, 100)]    # (gain factor, frames per second)
@@ -83,24 +84,25 @@ def run_case(job) -> tuple[str, str | None]:
 
 
 def run_training(job) -> tuple[str, str | None]:
-    name, gain, fps = job
-    result = TRAINING[name](gain=gain, fps=fps)
-    return name, None if result['ok'] else f'training, gain x{gain:g}, {fps} fps: {result}'
+    name, offset, gain, fps = job
+    protocol, _ = TRAINING[name]
+    result = protocol(gain=gain, fps=fps) if offset is None else protocol(gain=gain, fps=fps, offset=offset)
+    where = f"training{'' if offset is None else f', teacher {offset:+g}s'}, gain x{gain:g}, {fps} fps"
+    return name, None if result['ok'] else f'{where}: {result}'
 
 
 def main(names: list[str]) -> int:
     failures = {name: check_file(name) for name in names}
     jobs = [(name, strikes, expect, gain, fps) for name in names for strikes, expect in CASES[name] for gain, fps in VARIANTS]
-    training = [(name, gain, fps) for name in names if name in TRAINING for gain, fps in VARIANTS]
+    training = [(name, offset, gain, fps) for name in names if name in TRAINING
+                for offset in TRAINING[name][1] for gain, fps in VARIANTS]
     with Pool() as pool:
-        for name, problem in pool.imap_unordered(run_case, jobs):
-            if problem:
-                failures[name].append(problem)
-        for name, problem in pool.imap_unordered(run_training, training):
+        slow = pool.imap_unordered(run_training, training)          # start the long training runs first
+        for name, problem in list(pool.imap_unordered(run_case, jobs)) + list(slow):
             if problem:
                 failures[name].append(problem)
     for name in names:
-        runs = (len(CASES[name]) + (name in TRAINING)) * len(VARIANTS)
+        runs = (len(CASES[name]) + len(TRAINING.get(name, (None, []))[1])) * len(VARIANTS)
         print(f"{'PASS' if not failures[name] else 'FAIL'}  {name:8} ({runs} runs)")
         for problem in failures[name]:
             print(f'      {problem}')

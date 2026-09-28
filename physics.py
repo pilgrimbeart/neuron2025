@@ -4,7 +4,9 @@ Every cell has:
   kind          EMPTY, NORMAL, or TRANSDUCER (set by the designer)
   energy        fuel, 0..1, refilled at SUPPLY/S
   flame         how strongly it is burning (0 = dark)
-  weight        how readily it responds to light (1 = normal); the slow value learning will change
+  weight        how readily it responds to light (1 = normal); the slow value learning changes
+  light_trace   fading memory of the brightest recent illumination
+  teach_trace   fading memory of the brightest recent teaching signal
 and receives two kinds of light, recomputed each step from other cells' flames (never its own):
   illumination  light from NORMAL cells, which can ignite it
   modulator     light from TRANSDUCER cells, which never ignites anything; a teaching signal
@@ -18,9 +20,11 @@ Each time step (dt seconds):
   4. a burning flame relaxes toward the cell's energy with time constant FLAME_INERTIA
   5. burning uses energy at FLAME_CONSUME * flame; a flame whose fuel runs out goes out
   6. non-empty cells refill energy at SUPPLY/S, up to 1
-  7. learning: a ready cell (dark, with at least STRIKE_LEVEL energy) under teaching signal M changes its
-     weight at M * (LEARN_RATE * illumination - UNLEARN_RATE * M), kept within WEIGHT_MIN..WEIGHT_MAX.
-     Light brighter than the teaching signal strengthens; teaching signal in the dark weakens.
+  7. each trace follows its signal up at once, and otherwise fades with time constant TRACE_TIME
+  8. learning, with teaching trace T and light trace L, kept within WEIGHT_MIN..WEIGHT_MAX:
+       every cell strengthens at LEARN_RATE * T * L   (credit for light received, whether it then fired or not)
+       a cell at rest (dark, full energy) weakens at UNLEARN_RATE * T * T   (teaching signal in the dark)
+     Because it uses traces, light and teaching signal count as together if within a couple of seconds.
 """
 
 from __future__ import annotations
@@ -47,30 +51,36 @@ DEFAULT_PARAMS = {
     "UNLEARN_RATE": 144.0,
     "WEIGHT_MIN": 0.5,
     "WEIGHT_MAX": 2.0,
+    "TRACE_TIME": 2.0,
 }
 
 
 @functools.lru_cache
-def self_weight(sigma: float) -> float:
-    """The share of a cell's own flame that the Gaussian blur gives back to it."""
-    impulse = np.zeros((9, 9))
-    impulse[4, 4] = 1.0
-    return float(scipy.ndimage.gaussian_filter(impulse, sigma=sigma, mode="constant")[4, 4])
+def kernel(sigma: float) -> np.ndarray:
+    """1-D Gaussian weights out to 4 sigma, summing to 1."""
+    x = np.arange(-int(4 * sigma + 0.5), int(4 * sigma + 0.5) + 1)
+    k = np.exp(-x * x / (2 * sigma * sigma))
+    return k / k.sum()
 
 
-def spread(source: np.ndarray, p: dict[str, float]) -> np.ndarray:
-    """Light each cell receives from the other cells' source values."""
-    blur = scipy.ndimage.gaussian_filter(source, sigma=p["COUPLING_DIST"], mode="constant")
-    return np.maximum(0.0, p["COUPLING_GAIN"] * (blur - self_weight(p["COUPLING_DIST"]) * source))
+def spread(sources: np.ndarray, p: dict[str, float]) -> np.ndarray:
+    """Light each cell receives from the other cells' source values: a Gaussian blur over the last two axes,
+    minus the cell's own contribution."""
+    k = kernel(p["COUPLING_DIST"])
+    blur = scipy.ndimage.correlate1d(sources, k, axis=-1, mode="constant")
+    blur = scipy.ndimage.correlate1d(blur, k, axis=-2, mode="constant")
+    own = k[len(k) // 2] ** 2
+    return np.maximum(0.0, p["COUPLING_GAIN"] * (blur - own * sources))
 
 
-def step(kind: np.ndarray, energy: np.ndarray, flame: np.ndarray, weight: np.ndarray, p: dict[str, float], dt: float):
-    """Advance every cell by dt seconds. Returns new (energy, flame, weight, illumination, modulator) arrays."""
-    energy, flame = energy.copy(), flame.copy()
+def step(cells: dict[str, np.ndarray], p: dict[str, float], dt: float) -> dict[str, np.ndarray]:
+    """Advance every cell by dt seconds. cells holds kind, energy, flame, weight, light_trace and teach_trace;
+    returns their new values plus this step's illumination and modulator."""
+    kind, weight = cells["kind"], cells["weight"]
+    energy, flame = cells["energy"].copy(), cells["flame"].copy()
     present = kind != EMPTY
 
-    illumination = spread(np.where(kind == NORMAL, flame, 0.0), p)
-    modulator = spread(np.where(kind == TRANSDUCER, flame, 0.0), p)
+    illumination, modulator = spread(np.stack([np.where(kind == NORMAL, flame, 0.0), np.where(kind == TRANSDUCER, flame, 0.0)]), p)
 
     ignite = present & (flame == 0) & (energy >= p["STRIKE_LEVEL"]) & (weight * illumination >= p["MIN_STRIKE"])
     flame[ignite] = p["STRIKE_LEVEL"]
@@ -88,10 +98,16 @@ def step(kind: np.ndarray, energy: np.ndarray, flame: np.ndarray, weight: np.nda
 
     energy[present] = np.minimum(1, energy[present] + p["SUPPLY/S"] * dt)
 
-    ready = present & (flame == 0) & (energy >= p["STRIKE_LEVEL"])
-    change = modulator * (p["LEARN_RATE"] * illumination - p["UNLEARN_RATE"] * modulator) * dt
-    weight = np.where(ready, np.clip(weight + change, p["WEIGHT_MIN"], p["WEIGHT_MAX"]), weight)
-    return energy, flame, weight, illumination, modulator
+    fade = math.exp(-dt / p["TRACE_TIME"])
+    light_trace = np.maximum(illumination, cells["light_trace"] * fade)
+    teach_trace = np.maximum(modulator, cells["teach_trace"] * fade)
+
+    at_rest = present & (flame == 0) & (energy >= 1.0)
+    strengthen = p["LEARN_RATE"] * teach_trace * light_trace * present
+    weaken = p["UNLEARN_RATE"] * teach_trace * teach_trace * at_rest
+    weight = np.clip(weight + (strengthen - weaken) * dt, p["WEIGHT_MIN"], p["WEIGHT_MAX"])
+    return {"energy": energy, "flame": flame, "weight": weight, "light_trace": light_trace, "teach_trace": teach_trace,
+            "illumination": illumination, "modulator": modulator}
 
 
 def can_ignite(kind: int, energy: float, p: dict[str, float]) -> bool:

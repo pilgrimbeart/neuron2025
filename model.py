@@ -30,7 +30,9 @@ class State:
     """The grid of cells, plus editing operations. The cell behaviour itself is in physics.py."""
 
     # Per-cell arrays and the value an empty or newly exposed cell holds.
-    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "illumination": 0.0, "modulator": 0.0}
+    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "light_trace": 0.0, "teach_trace": 0.0,
+              "illumination": 0.0, "modulator": 0.0}
+    SAVED = ("kind", "energy", "flame", "weight", "light_trace", "teach_trace")
 
     def __init__(self, grid_size: tuple[int, int]):
         self.grid_size = grid_size
@@ -59,14 +61,13 @@ class State:
     def reset_energy_and_flame(self) -> None:
         """Flame off, energy full wherever there is a cell."""
         self.energy_array[:] = np.where(self.kind_array != physics.EMPTY, 1.0, 0.0)
-        self.flame_array[:] = 0
-        self.illumination_array[:] = 0
-        self.modulator_array[:] = 0
+        for name in ("flame", "light_trace", "teach_trace", "illumination", "modulator"):
+            getattr(self, f"{name}_array")[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
-        self.energy_array, self.flame_array, self.weight_array, self.illumination_array, self.modulator_array = physics.step(
-            self.kind_array, self.energy_array, self.flame_array, self.weight_array, config.vars, delta_s
-        )
+        new = physics.step({name: getattr(self, f"{name}_array") for name in self.SAVED}, config.vars, delta_s)
+        for name, value in new.items():
+            setattr(self, f"{name}_array", value)
 
     def strike(self, xy: tuple[int, int], config: SimulationConfig) -> bool:
         if not physics.can_ignite(self.kind_array[xy], self.energy_array[xy], config.vars):

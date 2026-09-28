@@ -43,7 +43,7 @@ def check_file(name: str) -> list[str]:
     if config.vars != physics.DEFAULT_PARAMS:
         problems.append(f'parameters differ from physics.DEFAULT_PARAMS: {config.vars}')
     expected, expected_probes = gates.build_state(name)
-    if state.grid_size != expected.grid_size or not np.array_equal(state.enabled_array, expected.enabled_array):
+    if state.grid_size != expected.grid_size or not np.array_equal(state.kind_array, expected.kind_array):
         problems.append('layout differs from gates.py (run: python gates.py ' + name + ')')
     if {p.get('label'): tuple(p['xy']) for p in probes} != {p['label']: p['xy'] for p in expected_probes}:
         problems.append('probes differ from gates.py')

@@ -158,11 +158,13 @@ PATTERNS = {
 
 
 def build_state(name: str) -> tuple[State, list[dict]]:
-    cells, probes, size = PATTERNS[name]()
+    cells, probes, size, *rest = PATTERNS[name]()
+    transducers = rest[0] if rest else set()
     state = State((size, size))
     for xy in cells:
-        state.enabled_array[xy] = True
-    state.reset_energy_and_flame()
+        state.set_kind(xy, physics.NORMAL)
+    for xy in transducers:
+        state.set_kind(xy, physics.TRANSDUCER)
     return state, [{'xy': xy, 'label': label} for label, xy in probes.items()]
 
 

@@ -33,10 +33,11 @@ def save_snapshot(
 ) -> None:
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     obj = {
-        "enabled": state.enabled_array.tolist(),
+        "kind": state.kind_array.tolist(),
         "energy": state.energy_array.tolist(),
         "flame": state.flame_array.tolist(),
-        "probes": copy.deepcopy(probes),
+        "weight": state.weight_array.tolist(),
+        "probes": [{"xy": list(p["xy"]), **({"label": p["label"]} if p.get("label") else {})} for p in probes],
         "vars": copy.deepcopy(config.vars),
     }
     with open(snapshot_path(filename), "wt") as handle:
@@ -47,13 +48,11 @@ def load_snapshot(filename: str) -> tuple[State, list[dict], dict[str, float]]:
     with open(snapshot_path(filename), "rt") as handle:
         obj = json.load(handle)
 
-    x_size = len(obj["enabled"])
-    y_size = len(obj["enabled"][0])
-    state = State((x_size, y_size))
-    state.enabled_array = np.array(obj["enabled"], dtype=bool)
+    state = State((len(obj["kind"]), len(obj["kind"][0])))
+    state.kind_array = np.array(obj["kind"], dtype=np.int8)
     state.energy_array = np.array(obj["energy"], dtype=float)
     state.flame_array = np.array(obj["flame"], dtype=float)
-    state.illumination_array = np.zeros((x_size, y_size), dtype=float)
+    state.weight_array = np.array(obj["weight"], dtype=float)
 
     probes = obj.get("probes", [])
     for probe in probes:

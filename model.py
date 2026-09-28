@@ -29,108 +29,81 @@ class SimulationConfig:
 class State:
     """The grid of cells, plus editing operations. The cell behaviour itself is in physics.py."""
 
+    # Per-cell arrays and the value an empty or newly exposed cell holds.
+    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "illumination": 0.0, "modulator": 0.0}
+
     def __init__(self, grid_size: tuple[int, int]):
         self.grid_size = grid_size
-        self.enabled_array = np.zeros(self.grid_size, dtype=bool)
-        self.energy_array = np.zeros(self.grid_size, dtype=float)
-        self.flame_array = np.zeros(self.grid_size, dtype=float)
-        self.illumination_array = np.zeros(self.grid_size, dtype=float)
+        self.kind_array = np.zeros(grid_size, dtype=np.int8)
+        for name, blank in self.ARRAYS.items():
+            if name != "kind":
+                setattr(self, f"{name}_array", np.full(grid_size, blank, dtype=float))
 
-    def set_all_enableds(self, state: bool) -> None:
-        self.enabled_array[:] = state
+    def arrays(self):
+        return [(name, blank, getattr(self, f"{name}_array")) for name, blank in self.ARRAYS.items()]
+
+    def set_kind(self, xy: tuple[int, int], kind: int) -> None:
+        """Place or remove one cell, fresh: full energy, no flame, neutral weight."""
+        self.kind_array[xy] = kind
+        self.energy_array[xy] = 1.0 if kind != physics.EMPTY else 0.0
+        self.flame_array[xy] = 0.0
+        self.weight_array[xy] = 1.0
+
+    def set_all_kinds(self, kind: int) -> None:
+        self.kind_array[:] = kind
+        self.weight_array[:] = 1.0
 
     def reset_energy_and_flame(self) -> None:
-        """Flame off, energy full wherever enabled."""
-        self.energy_array[:] = 0
-        self.energy_array[self.enabled_array] = 1.0
+        """Flame off, energy full wherever there is a cell."""
+        self.energy_array[:] = np.where(self.kind_array != physics.EMPTY, 1.0, 0.0)
         self.flame_array[:] = 0
         self.illumination_array[:] = 0
+        self.modulator_array[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
-        self.energy_array, self.flame_array, self.illumination_array = physics.step(
-            self.enabled_array, self.energy_array, self.flame_array, config.vars, delta_s
+        self.energy_array, self.flame_array, self.illumination_array, self.modulator_array = physics.step(
+            self.kind_array, self.energy_array, self.flame_array, self.weight_array, config.vars, delta_s
         )
 
     def strike(self, xy: tuple[int, int], config: SimulationConfig) -> bool:
-        if not physics.can_ignite(self.enabled_array[xy], self.energy_array[xy], config.vars):
+        if not physics.can_ignite(self.kind_array[xy], self.energy_array[xy], config.vars):
             return False
         self.flame_array[xy] = config.get("STRIKE_LEVEL")
         return True
 
     def shift(self, dx: int, dy: int) -> None:
-        def scroll(arr: np.ndarray) -> np.ndarray:
-            arr = np.roll(arr, shift=dx, axis=0)
-            arr = np.roll(arr, shift=dy, axis=1)
-            if dx > 0:
-                arr[0:dx, :] = 0
-            if dx < 0:
-                arr[dx:, :] = 0
-            if dy > 0:
-                arr[:, 0:dy] = 0
-            if dy < 0:
-                arr[:, dy:] = 0
-            return arr
-
-        self.enabled_array = scroll(self.enabled_array)
-        self.energy_array = scroll(self.energy_array)
-        self.flame_array = scroll(self.flame_array)
-        self.illumination_array = scroll(self.illumination_array)
+        for name, blank, arr in self.arrays():
+            moved = np.full_like(arr, blank)
+            src_x = slice(max(0, -dx), arr.shape[0] - max(0, dx))
+            dst_x = slice(max(0, dx), arr.shape[0] - max(0, -dx))
+            src_y = slice(max(0, -dy), arr.shape[1] - max(0, dy))
+            dst_y = slice(max(0, dy), arr.shape[1] - max(0, -dy))
+            moved[dst_x, dst_y] = arr[src_x, src_y]
+            setattr(self, f"{name}_array", moved)
 
     def split_shift(self, dx: int, dy: int, cursor_xy: tuple[int, int]) -> None:
-        cursor_x, cursor_y = cursor_xy
-
-        def shift_x(arr: np.ndarray) -> np.ndarray:
-            new_arr = arr.copy()
-            if dx > 0:
-                if cursor_x + 1 < arr.shape[0]:
-                    new_arr[cursor_x + 1 :, :] = arr[cursor_x:-1, :]
-                new_arr[cursor_x, :] = 0
-            elif dx < 0:
-                if cursor_x > 0:
-                    new_arr[:cursor_x, :] = arr[1 : cursor_x + 1, :]
-                new_arr[cursor_x, :] = 0
-            return new_arr
-
-        def shift_y(arr: np.ndarray) -> np.ndarray:
-            new_arr = arr.copy()
-            if dy > 0:
-                if cursor_y + 1 < arr.shape[1]:
-                    new_arr[:, cursor_y + 1 :] = arr[:, cursor_y:-1]
-                new_arr[:, cursor_y] = 0
-            elif dy < 0:
-                if cursor_y > 0:
-                    new_arr[:, :cursor_y] = arr[:, 1 : cursor_y + 1]
-                new_arr[:, cursor_y] = 0
-            return new_arr
-
-        if dx != 0:
-            self.enabled_array = shift_x(self.enabled_array)
-            self.energy_array = shift_x(self.energy_array)
-            self.flame_array = shift_x(self.flame_array)
-            self.illumination_array = shift_x(self.illumination_array)
-
-        if dy != 0:
-            self.enabled_array = shift_y(self.enabled_array)
-            self.energy_array = shift_y(self.energy_array)
-            self.flame_array = shift_y(self.flame_array)
-            self.illumination_array = shift_y(self.illumination_array)
+        """Insert a blank row or column at the cursor, moving the cells on one side of it outward."""
+        axis, d, c = (0, dx, cursor_xy[0]) if dx != 0 else (1, dy, cursor_xy[1])
+        for name, blank, arr in self.arrays():
+            arr = np.moveaxis(arr, axis, 0)
+            new = arr.copy()
+            if d > 0:
+                new[c + 1:] = arr[c:-1]
+            else:
+                new[:c] = arr[1:c + 1]
+            new[c] = blank
+            setattr(self, f"{name}_array", np.moveaxis(new, 0, axis))
 
     def paste(self, source_state: "State") -> None:
         """Copy source_state in, centred: source cell (x, y) lands at (x, y) + centre_offset."""
         offset = centre_offset(source_state.grid_size, self.grid_size)
-
-        def paste_array(foreground: np.ndarray, background: np.ndarray) -> None:
-            dst, src = [], []
-            for off, fg_len, bg_len in zip(offset, foreground.shape, background.shape):
-                start, end = max(0, off), min(bg_len, off + fg_len)
-                dst.append(slice(start, end))
-                src.append(slice(start - off, end - off))
-            background[tuple(dst)] = foreground[tuple(src)]
-
-        paste_array(source_state.enabled_array, self.enabled_array)
-        paste_array(source_state.energy_array, self.energy_array)
-        paste_array(source_state.flame_array, self.flame_array)
-        paste_array(source_state.illumination_array, self.illumination_array)
+        dst, src = [], []
+        for off, fg_len, bg_len in zip(offset, source_state.grid_size, self.grid_size):
+            start, end = max(0, off), min(bg_len, off + fg_len)
+            dst.append(slice(start, end))
+            src.append(slice(start - off, end - off))
+        for name, _, arr in self.arrays():
+            arr[tuple(dst)] = getattr(source_state, f"{name}_array")[tuple(src)]
 
     def clone(self) -> "State":
         return copy.deepcopy(self)

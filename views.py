@@ -8,9 +8,10 @@ import pygame
 from model import SimulationConfig, State
 
 
-ENERGY_COLOUR = (0, 255, 0)
-FLAME_COLOUR = (0, 0, 255)
+ENERGY_COLOUR = (255, 0, 0)
+FLAME_COLOUR = (0, 255, 0)
 ILLUMINATION_COLOUR = (255, 255, 255)
+FLAME_DISPLAY_GAIN = 2.0   # typical peak flame (~0.43) shows near full green
 
 
 class CellsPanel:
@@ -27,24 +28,20 @@ class CellsPanel:
         self.pixel_scale = self.size[0] / self.grid_size[0]
         self.surface = pygame.Surface(self.grid_size)
 
-    def render(self, state: State, show_only: str, probes: list[dict]) -> None:
-        white_int = 1 + 256 + 256 * 256
-        if show_only:
-            arrays = {
-                "E": state.energy_array,
-                "F": state.flame_array,
-                "I": state.illumination_array,
-            }
-            arr = arrays[show_only]
-            values = np.clip((arr * 256).astype(int), 0, 255)
-            pygame.surfarray.blit_array(self.surface, values * white_int)
+    def render(self, state: State, config: SimulationConfig, show_only: str, probes: list[dict]) -> None:
+        """Red = energy, green = flame, blue = teaching signal received. 'E' shows energy and 'I' illumination in grey."""
+        if show_only == "E":
+            grey = state.energy_array
+            rgb = np.repeat(grey[:, :, None], 3, axis=2)
+        elif show_only == "I":
+            grey = state.illumination_array / (2 * config.get("MIN_STRIKE"))   # ignition threshold = mid-grey
+            rgb = np.repeat(grey[:, :, None], 3, axis=2)
         else:
-            energy = np.clip((state.energy_array * 256).astype(int), 0, 255)
-            flame = np.clip((state.flame_array * 256).astype(int), 0, 255)
-            pygame.surfarray.blit_array(
-                self.surface,
-                energy + 255 * 256 * flame + 255 * 256 * 256 * state.enabled_array,
-            )
+            rgb = np.zeros(state.grid_size + (3,))
+            rgb[:, :, 0] = state.energy_array
+            rgb[:, :, 1] = state.flame_array * FLAME_DISPLAY_GAIN
+            rgb[:, :, 2] = state.modulator_array / (2 * config.get("MIN_STRIKE"))
+        pygame.surfarray.blit_array(self.surface, (np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 
         pixels = pygame.transform.scale(self.surface, self.size)
         self.screen.blit(pixels, self.xy)
@@ -177,14 +174,14 @@ class ChartPanel:
         for probe in self.probes:
             if probe["xy"] == cell_xy:
                 return
-        self.probes.append(
-            {
-                "xy": cell_xy,
-                "energy_chart": [],
-                "flame_chart": [],
-                "illumination_chart": [],
-            }
-        )
+        self.probes.append(self.new_probe(cell_xy))
+
+    @staticmethod
+    def new_probe(xy: tuple[int, int], label: str | None = None) -> dict:
+        probe = {"xy": tuple(xy), "energy_chart": [], "flame_chart": [], "illumination_chart": []}
+        if label:
+            probe["label"] = label
+        return probe
 
     def find_probe_index(self, cell_xy: tuple[int, int]) -> int | None:
         for index, probe in enumerate(self.probes):
@@ -205,9 +202,7 @@ class ChartPanel:
         self.probes = shifted
 
     def set_probes(self, probes: list[dict]) -> None:
-        self.probes = probes
-        for probe in self.probes:
-            probe["xy"] = tuple(probe["xy"])
+        self.probes = [self.new_probe(probe["xy"], probe.get("label")) for probe in probes]
 
     def is_click_within(self, xy: tuple[int, int]) -> bool:
         return (

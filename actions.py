@@ -5,6 +5,8 @@ from typing import Callable
 
 import pygame
 
+import physics
+
 
 FOCUS_ORDER = ("cells", "chart", "console")
 
@@ -45,12 +47,13 @@ COMMANDS = [
     Command("resume", "Resume the simulation", lambda app, a: app.set_paused(False)),
     Command("stats", "Print grid-wide activity summary", lambda app, a: app.console_stats()),
     Command("probes", "Print each probe's live energy/flame/illumination", lambda app, a: app.console_probes()),
-    Command("inspect X Y", "Print one cell's live energy/flame/illumination", lambda app, a: app.console_inspect(a[0], a[1])),
+    Command("inspect X Y", "Print one cell's kind, energy, flame, weight, illumination and teaching signal", lambda app, a: app.console_inspect(a[0], a[1])),
     Command("params", "Print the current parameter values", lambda app, a: app.print_var_list()),
     Command("clear", "Clear the enabled pattern and zero activity", lambda app, a: app.clear_enabled()),
     Command("fill", "Enable every cell", lambda app, a: app.fill_enabled()),
-    Command("enable X Y", "Enable a cell", lambda app, a: app.console_enable(a[0], a[1], True)),
-    Command("disable X Y", "Disable a cell", lambda app, a: app.console_enable(a[0], a[1], False)),
+    Command("enable X Y", "Make a normal cell", lambda app, a: app.console_set_kind(a[0], a[1], physics.NORMAL)),
+    Command("transducer X Y", "Make a transducer cell: burns like a normal cell, but emits teaching signal instead of light", lambda app, a: app.console_set_kind(a[0], a[1], physics.TRANSDUCER)),
+    Command("disable X Y", "Remove a cell", lambda app, a: app.console_set_kind(a[0], a[1], physics.EMPTY)),
     Command("settle", "Flame off, energy full where enabled", lambda app, a: app.zero_activity()),
     Command("probe X Y", "Add a chart probe", lambda app, a: app.console_probe(a[0], a[1])),
     Command("deleteprobe X Y", "Delete the chart probe at a cell", lambda app, a: app.console_deleteprobe(a[0], a[1])),

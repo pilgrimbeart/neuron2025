@@ -10,12 +10,15 @@ from pathlib import Path
 import pygame
 
 from actions import COMMANDS, FOCUS_ORDER, build_help_lines, dispatch_keydown, find_command
+import physics
 from headless import grid_summary, probe_by_label
 from model import SimulationConfig, State, centre_offset, resized_state
 from persistence import list_snapshot_names, load_snapshot, save_snapshot
 from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
 
+
+KIND_NAMES = {physics.EMPTY: "empty", physics.NORMAL: "normal", physics.TRANSDUCER: "transducer"}
 
 CONTROL_IN_PATH = Path("control_in.txt")
 CONTROL_OUT_PATH = Path("control_out.log")
@@ -154,13 +157,11 @@ class SimulatorApp:
         hit, grid_x, grid_y = self.cells_panel.find_cell(self.last_mouse_pos)
         return hit, (grid_x, grid_y)
 
-    def set_enabled(self, xy: tuple[int, int], state: bool) -> None:
-        self.state.enabled_array[xy] = state
-        self.state.energy_array[xy] = 1.0 if state else 0.0
-        self.state.flame_array[xy] = 0
+    def set_enabled(self, xy: tuple[int, int], enabled: bool) -> None:
+        self.state.set_kind(xy, physics.NORMAL if enabled else physics.EMPTY)
 
     def get_enabled(self, xy: tuple[int, int]) -> bool:
-        return bool(self.state.enabled_array[xy])
+        return bool(self.state.kind_array[xy] != physics.EMPTY)
 
     def strike_cell(self, cell_xy: tuple[int, int]) -> bool:
         return self.state.strike(cell_xy, self.config)
@@ -193,13 +194,13 @@ class SimulatorApp:
 
     def clear_enabled(self) -> None:
         self.push_undo_state()
-        self.state.set_all_enableds(False)
+        self.state.set_all_kinds(physics.EMPTY)
         self.state.reset_energy_and_flame()
         print("Cleared")
 
     def fill_enabled(self) -> None:
         self.push_undo_state()
-        self.state.set_all_enableds(True)
+        self.state.set_all_kinds(physics.NORMAL)
         self.state.reset_energy_and_flame()
         print("Filled")
 
@@ -341,7 +342,7 @@ class SimulatorApp:
         print(f"Loaded {name}.json")
         self.check_config_safety()
 
-    def console_enable(self, x_str: str, y_str: str, state: bool) -> None:
+    def console_set_kind(self, x_str: str, y_str: str, kind: int) -> None:
         try:
             xy = (int(x_str), int(y_str))
         except ValueError:
@@ -351,8 +352,8 @@ class SimulatorApp:
             print(f"Coordinates {xy} out of range")
             return
         self.push_undo_state()
-        self.set_enabled(xy, state)
-        print(f"{'Enabled' if state else 'Disabled'} {xy}")
+        self.state.set_kind(xy, kind)
+        print(f"{xy} is now {KIND_NAMES[kind]}")
 
     def console_probe(self, x_str: str, y_str: str) -> None:
         try:
@@ -437,11 +438,10 @@ class SimulatorApp:
 
     def console_stats(self) -> None:
         lit, total_flame = grid_summary(self.state)
-        enabled = self.state.enabled_array
-        energy = self.state.energy_array[enabled]
+        energy = self.state.energy_array[self.state.kind_array != physics.EMPTY]
         print(f"lit_cells={lit} total_flame={total_flame:.4f}")
         if energy.size:
-            print(f"energy(enabled): min={energy.min():.4f} mean={energy.mean():.4f} max={energy.max():.4f}")
+            print(f"energy(cells): min={energy.min():.4f} mean={energy.mean():.4f} max={energy.max():.4f}")
 
     def console_probes(self) -> None:
         for index, probe in enumerate(self.chart_panel.probes):
@@ -461,11 +461,9 @@ class SimulatorApp:
         if not (0 <= xy[0] < self.state.grid_size[0] and 0 <= xy[1] < self.state.grid_size[1]):
             print(f"Coordinates {xy} out of range")
             return
-        enabled = bool(self.state.enabled_array[xy])
-        e = float(self.state.energy_array[xy])
-        f = float(self.state.flame_array[xy])
-        i = float(self.state.illumination_array[xy])
-        print(f"{xy} enabled={enabled} energy={e:.4f} flame={f:.4f} illumination={i:.4f}")
+        s = self.state
+        print(f"{xy} kind={KIND_NAMES[int(s.kind_array[xy])]} energy={s.energy_array[xy]:.4f} flame={s.flame_array[xy]:.4f} "
+              f"weight={s.weight_array[xy]:.4f} illumination={s.illumination_array[xy]:.4f} modulator={s.modulator_array[xy]:.4f}")
 
     def print_commands(self) -> None:
         print("Console commands:")
@@ -569,7 +567,7 @@ class SimulatorApp:
         self.screen.fill((0, 0, 0))
         self.console_panel.render(delta_s, self.paused)
         self.chart_panel.render(self.config)
-        self.cells_panel.render(self.state, self.show_only, self.chart_panel.probes)
+        self.cells_panel.render(self.state, self.config, self.show_only, self.chart_panel.probes)
         if self.help_visible:
             self.help_overlay.render(self.help_lines)
         self.recorder.add_frame(self.screen, delta_s)

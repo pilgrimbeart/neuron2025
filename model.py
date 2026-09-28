@@ -61,7 +61,7 @@ class State:
         self.modulator_array[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
-        self.energy_array, self.flame_array, self.illumination_array, self.modulator_array = physics.step(
+        self.energy_array, self.flame_array, self.weight_array, self.illumination_array, self.modulator_array = physics.step(
             self.kind_array, self.energy_array, self.flame_array, self.weight_array, config.vars, delta_s
         )
 

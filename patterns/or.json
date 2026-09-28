@@ -4397,6 +4397,10 @@
         "MIN_FLAME": 0.06,
         "MIN_STRIKE": 0.2,
         "STRIKE_LEVEL": 0.12,
-        "SUPPLY/S": 0.144
+        "SUPPLY/S": 0.144,
+        "LEARN_RATE": 96.0,
+        "UNLEARN_RATE": 144.0,
+        "WEIGHT_MIN": 0.5,
+        "WEIGHT_MAX": 2.0
     }
 }

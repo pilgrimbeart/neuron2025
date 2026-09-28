@@ -18,6 +18,9 @@ Each time step (dt seconds):
   4. a burning flame relaxes toward the cell's energy with time constant FLAME_INERTIA
   5. burning uses energy at FLAME_CONSUME * flame; a flame whose fuel runs out goes out
   6. non-empty cells refill energy at SUPPLY/S, up to 1
+  7. learning: a ready cell (dark, with at least STRIKE_LEVEL energy) under teaching signal M changes its
+     weight at M * (LEARN_RATE * illumination - UNLEARN_RATE * M), kept within WEIGHT_MIN..WEIGHT_MAX.
+     Light brighter than the teaching signal strengthens; teaching signal in the dark weakens.
 """
 
 from __future__ import annotations
@@ -40,6 +43,10 @@ DEFAULT_PARAMS = {
     "MIN_STRIKE": 0.2,
     "STRIKE_LEVEL": 0.12,
     "SUPPLY/S": 0.144,
+    "LEARN_RATE": 96.0,
+    "UNLEARN_RATE": 144.0,
+    "WEIGHT_MIN": 0.5,
+    "WEIGHT_MAX": 2.0,
 }
 
 
@@ -58,7 +65,7 @@ def spread(source: np.ndarray, p: dict[str, float]) -> np.ndarray:
 
 
 def step(kind: np.ndarray, energy: np.ndarray, flame: np.ndarray, weight: np.ndarray, p: dict[str, float], dt: float):
-    """Advance every cell by dt seconds. Returns new (energy, flame, illumination, modulator) arrays."""
+    """Advance every cell by dt seconds. Returns new (energy, flame, weight, illumination, modulator) arrays."""
     energy, flame = energy.copy(), flame.copy()
     present = kind != EMPTY
 
@@ -80,7 +87,11 @@ def step(kind: np.ndarray, energy: np.ndarray, flame: np.ndarray, weight: np.nda
     energy[exhausted] = 0
 
     energy[present] = np.minimum(1, energy[present] + p["SUPPLY/S"] * dt)
-    return energy, flame, illumination, modulator
+
+    ready = present & (flame == 0) & (energy >= p["STRIKE_LEVEL"])
+    change = modulator * (p["LEARN_RATE"] * illumination - p["UNLEARN_RATE"] * modulator) * dt
+    weight = np.where(ready, np.clip(weight + change, p["WEIGHT_MIN"], p["WEIGHT_MAX"]), weight)
+    return energy, flame, weight, illumination, modulator
 
 
 def can_ignite(kind: int, energy: float, p: dict[str, float]) -> bool:

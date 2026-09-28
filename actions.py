@@ -137,6 +137,7 @@ KEY_ACTIONS = [
     KeyAction("Grid", "cells", "e", "Toggle energy-only view", _plain_key(ord("e")), lambda app: app.toggle_show_only("E")),
     KeyAction("Grid", "cells", "f", "Fill grid with enabled cells", _plain_key(ord("f")), lambda app: app.submit("fill")),
     KeyAction("Grid", "cells", "i", "Toggle illumination-only view", _plain_key(ord("i")), lambda app: app.toggle_show_only("I")),
+    KeyAction("Grid", "cells", "w", "Toggle weight-only view", _plain_key(ord("w")), lambda app: app.toggle_show_only("W")),
     KeyAction("Grid", "cells", "n", "Name probe under mouse", _plain_key(ord("n")), lambda app: app.name_probe_under_mouse()),
     KeyAction("Grid", "cells", "p", "Pause/resume", _plain_key(ord("p")), lambda app: app.submit("resume" if app.paused else "pause")),
     KeyAction("Grid", "cells", "r", "Randomly strike cells", _plain_key(ord("r")), lambda app: app.random_strike()),
@@ -159,6 +160,7 @@ KEY_ACTIONS = [
 STATIC_HELP = [
     HelpEntry("Mouse", "Left click on grid", "Toggle the enabled state of a cell"),
     HelpEntry("Mouse", "Left drag on grid", "Paint more cells with the same state"),
+    HelpEntry("Mouse", "Ctrl+click on grid", "Toggle a transducer cell (transducer X Y / disable X Y)"),
     HelpEntry("Mouse", "Right click on grid", "Strike a cell and retrigger the chart"),
     HelpEntry("Mouse", "Click a panel", "Move focus to grid, chart, or console"),
     HelpEntry("Console", "Enter", "Execute the current console command"),

@@ -505,7 +505,11 @@ class SimulatorApp:
         if not hit:
             return
 
-        if event.button == 1:
+        if event.button == 1 and pygame.key.get_mods() & pygame.KMOD_CTRL:
+            is_transducer = self.state.kind_array[cell_xy] == physics.TRANSDUCER
+            self.submit(f"{'disable' if is_transducer else 'transducer'} {cell_xy[0]} {cell_xy[1]}")
+            self.dragging_state = None
+        elif event.button == 1:
             self.push_undo_state()
             self.set_enabled(cell_xy, not self.get_enabled(cell_xy))
             self.dragging_state = self.get_enabled(cell_xy)
@@ -516,7 +520,7 @@ class SimulatorApp:
 
     def handle_mouse_motion(self, event: pygame.event.Event) -> None:
         self.last_mouse_pos = pygame.mouse.get_pos()
-        if event.buttons[0]:
+        if event.buttons[0] and self.dragging_state is not None:
             hit, cell_xy = self.current_cell()
             if hit:
                 self.set_enabled(cell_xy, self.dragging_state)

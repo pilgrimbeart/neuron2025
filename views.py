@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import pygame
 
+import physics
 from model import SimulationConfig, State
 
 
@@ -12,6 +13,8 @@ ENERGY_COLOUR = (255, 0, 0)
 FLAME_COLOUR = (0, 255, 0)
 ILLUMINATION_COLOUR = (255, 255, 255)
 FLAME_DISPLAY_GAIN = 2.0   # typical peak flame (~0.43) shows near full green
+CELL_FLOOR = 0.1           # a cell never looks darker than 10% grey, so burnt-out cells stay visible
+TRANSDUCER_TINT = 0.4      # transducers always carry 40% blue
 
 
 class CellsPanel:
@@ -29,10 +32,15 @@ class CellsPanel:
         self.surface = pygame.Surface(self.grid_size)
 
     def render(self, state: State, config: SimulationConfig, show_only: str, probes: list[dict]) -> None:
-        """Red = energy, green = flame, blue = teaching signal received. 'E' shows energy and 'I' illumination in grey."""
-        if show_only == "E":
+        """Red = energy, green = flame, blue = teaching signal received. 'E', 'I' and 'W' show energy,
+        illumination and weight in grey."""
+        if show_only == "W":
+            grey = np.where(state.kind_array != 0, state.weight_array / config.get("WEIGHT_MAX"), 0.0)   # neutral 1.0 = mid-grey
+            rgb = np.repeat(grey[:, :, None], 3, axis=2)
+        elif show_only == "E":
             grey = state.energy_array
             rgb = np.repeat(grey[:, :, None], 3, axis=2)
+            rgb[state.kind_array != 0] = np.maximum(rgb[state.kind_array != 0], CELL_FLOOR)
         elif show_only == "I":
             grey = state.illumination_array / (2 * config.get("MIN_STRIKE"))   # ignition threshold = mid-grey
             rgb = np.repeat(grey[:, :, None], 3, axis=2)
@@ -41,6 +49,8 @@ class CellsPanel:
             rgb[:, :, 0] = state.energy_array
             rgb[:, :, 1] = state.flame_array * FLAME_DISPLAY_GAIN
             rgb[:, :, 2] = state.modulator_array / (2 * config.get("MIN_STRIKE"))
+            rgb[:, :, 2] += np.where(state.kind_array == physics.TRANSDUCER, TRANSDUCER_TINT, 0.0)
+            rgb[state.kind_array != 0] = np.maximum(rgb[state.kind_array != 0], CELL_FLOOR)
         pygame.surfarray.blit_array(self.surface, (np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 
         pixels = pygame.transform.scale(self.surface, self.size)

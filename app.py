@@ -26,7 +26,7 @@ class UndoSnapshot:
     state: State
     probes: list[dict]
     config_vars: dict[str, float]
-    config_selected: int
+    selected_var: int
     show_only: str
 
 
@@ -61,6 +61,7 @@ class SimulatorApp:
         pygame.display.set_caption("Neuron 2025")
 
         self.config = SimulationConfig()
+        self.selected_var = 0
         self.state = State((32, 32))
         self.show_only = ""
         self.running = True
@@ -126,7 +127,7 @@ class SimulatorApp:
             state=self.state.clone(),
             probes=copy.deepcopy(self.chart_panel.probes),
             config_vars=copy.deepcopy(self.config.vars),
-            config_selected=self.config.selected,
+            selected_var=self.selected_var,
             show_only=self.show_only,
         )
 
@@ -138,7 +139,7 @@ class SimulatorApp:
         self.cells_panel.set_grid_size(self.state.grid_size)
         self.chart_panel.set_probes(copy.deepcopy(snapshot.probes))
         self.config.vars = copy.deepcopy(snapshot.config_vars)
-        self.config.selected = snapshot.config_selected
+        self.selected_var = snapshot.selected_var
         self.show_only = snapshot.show_only
 
     def undo(self) -> None:
@@ -162,10 +163,7 @@ class SimulatorApp:
         return bool(self.state.enabled_array[xy])
 
     def strike_cell(self, cell_xy: tuple[int, int]) -> bool:
-        if self.state.enabled_array[cell_xy] and self.state.energy_array[cell_xy] >= self.config.get("STRIKE_LEVEL"):
-            self.state.flame_array[cell_xy] = self.config.get("STRIKE_LEVEL")
-            return True
-        return False
+        return self.state.strike(cell_xy, self.config)
 
     def name_probe_under_mouse(self) -> None:
         hit, cell_xy = self.current_cell()
@@ -272,19 +270,24 @@ class SimulatorApp:
         self.chart_panel.set_probes(updated)
 
     def select_previous_var(self) -> None:
-        self.config.select_previous()
+        self.selected_var = (self.selected_var - 1) % len(self.config.vars)
         self.print_var_list()
 
     def select_next_var(self) -> None:
-        self.config.select_next()
+        self.selected_var = (self.selected_var + 1) % len(self.config.vars)
         self.print_var_list()
 
     def submit_selected_var_scaled(self, factor: float) -> None:
-        self.submit(f"set {self.config.selected_key()} {self.config.get_selected() * factor:.6g}")
+        name = self.selected_var_name()
+        self.submit(f"set {name} {self.config.get(name) * factor:.6g}")
+
+    def selected_var_name(self) -> str:
+        return sorted(self.config.vars)[self.selected_var % len(self.config.vars)]
 
     def print_var_list(self) -> None:
-        for line in self.config.describe_lines():
-            print(line)
+        print()
+        for name in sorted(self.config.vars):
+            print(f"{name} {self.config.vars[name]}{' <-' if name == self.selected_var_name() else ''}")
 
     def check_config_safety(self) -> None:
         if self.config.stuck_on_risk():

@@ -1,36 +1,16 @@
 from __future__ import annotations
 
 import copy
-import math
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.ndimage
 
-
-DEFAULT_VARS = {
-    "COUPLING_DIST": 0.85,
-    "COUPLING_GAIN": 6.0,
-    "FLAME_CONSUME": 3.0,
-    "FLAME_INERTIA": 1.0,
-    "MIN_FLAME": 0.06,
-    "MIN_STRIKE": 0.2,
-    "STRIKE_LEVEL": 0.12,
-    "SUPPLY/S": 0.144,
-}
+import physics
 
 
 @dataclass
 class SimulationConfig:
-    vars: dict[str, float] = field(default_factory=lambda: copy.deepcopy(DEFAULT_VARS))
-    selected: int = 0
-
-    def sorted_keys(self) -> list[str]:
-        return sorted(self.vars)
-
-    def selected_key(self) -> str:
-        keys = self.sorted_keys()
-        return keys[self.selected % len(keys)]
+    vars: dict[str, float] = field(default_factory=lambda: copy.deepcopy(physics.DEFAULT_PARAMS))
 
     def get(self, name: str) -> float:
         return self.vars[name]
@@ -38,39 +18,17 @@ class SimulationConfig:
     def set(self, name: str, value: float) -> None:
         self.vars[name] = float(value)
 
-    def get_selected(self) -> float:
-        return self.vars[self.selected_key()]
-
-    def select_previous(self) -> None:
-        self.selected = (self.selected - 1) % len(self.vars)
-
-    def select_next(self) -> None:
-        self.selected = (self.selected + 1) % len(self.vars)
-
     def update_from_dict(self, values: dict[str, float]) -> None:
         for key, value in values.items():
             self.vars[key] = float(value)
 
-    def describe_lines(self) -> list[str]:
-        lines = [""]
-        selected_key = self.selected_key()
-        for key in self.sorted_keys():
-            marker = " <-" if key == selected_key else ""
-            lines.append(f"{key} {self.vars[key]}{marker}")
-        return lines
-
     def stuck_on_risk(self) -> bool:
-        """True if a burning cell can find a stable, non-extinguishing equilibrium.
-
-        The relaxation step lets flame settle wherever consumption balances
-        resupply: flame_eq = (SUPPLY/S) / FLAME_CONSUME. If that equilibrium
-        sits at or above MIN_FLAME, a cell that finds it can burn forever
-        without ever crossing the extinguish threshold.
-        """
-        return self.get("SUPPLY/S") >= self.get("MIN_FLAME") * self.get("FLAME_CONSUME")
+        return physics.stuck_on_risk(self.vars)
 
 
 class State:
+    """The grid of cells, plus editing operations. The cell behaviour itself is in physics.py."""
+
     def __init__(self, grid_size: tuple[int, int]):
         self.grid_size = grid_size
         self.enabled_array = np.zeros(self.grid_size, dtype=bool)
@@ -82,54 +40,22 @@ class State:
         self.enabled_array[:] = state
 
     def reset_energy_and_flame(self) -> None:
-        """Reset to a clean baseline: flame off, energy full wherever enabled.
-
-        Energy is filled rather than emptied so no residual "recently fired"
-        trace (e.g. from a loaded snapshot's history) leaks into whatever
-        reads energy as a proxy for recent activity.
-        """
+        """Flame off, energy full wherever enabled."""
         self.energy_array[:] = 0
         self.energy_array[self.enabled_array] = 1.0
         self.flame_array[:] = 0
         self.illumination_array[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
-        self.illumination_array = (
-            config.get("COUPLING_GAIN")
-            * scipy.ndimage.gaussian_filter(
-                self.flame_array,
-                sigma=config.get("COUPLING_DIST"),
-                mode="constant",
-            )
+        self.energy_array, self.flame_array, self.illumination_array = physics.step(
+            self.enabled_array, self.energy_array, self.flame_array, config.vars, delta_s
         )
 
-        self.flame_array[
-            self.enabled_array
-            & (self.flame_array == 0)
-            & (self.energy_array >= config.get("STRIKE_LEVEL"))
-            & (self.illumination_array >= config.get("MIN_STRIKE"))
-        ] = config.get("STRIKE_LEVEL")
-
-        self.flame_array[self.flame_array < config.get("MIN_FLAME")] = 0
-
-        flame_inertia = config.get("FLAME_INERTIA")
-        self.flame_array = np.where(
-            self.flame_array > 0,
-            self.energy_array
-            + (self.flame_array - self.energy_array)
-            * math.exp(-1.0 / flame_inertia * delta_s),
-            self.flame_array,
-        )
-
-        self.energy_array -= self.flame_array * config.get("FLAME_CONSUME") * delta_s
-        exhausted = self.energy_array <= 0
-        self.flame_array[exhausted] = 0
-        self.energy_array[exhausted] = 0
-
-        self.energy_array[self.enabled_array] = np.minimum(
-            1,
-            self.energy_array[self.enabled_array] + config.get("SUPPLY/S") * delta_s,
-        )
+    def strike(self, xy: tuple[int, int], config: SimulationConfig) -> bool:
+        if not physics.can_ignite(self.enabled_array[xy], self.energy_array[xy], config.vars):
+            return False
+        self.flame_array[xy] = config.get("STRIKE_LEVEL")
+        return True
 
     def shift(self, dx: int, dy: int) -> None:
         def scroll(arr: np.ndarray) -> np.ndarray:

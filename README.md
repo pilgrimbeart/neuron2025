@@ -120,7 +120,8 @@ Chart traces use the same colours: energy red, flame green, illumination white.
 - `Space`: advance one simulation step while paused.
 - `c`: clear the enabled pattern and zero activity (`clear`).
 - `f`: fill the whole grid with enabled cells (`fill`).
-- `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled (`settle`). Useful before a trial so no residual activity (e.g. from a loaded snapshot) leaks in.
+- `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled (`settle`). Useful before a trial so no residual activity (e.g. from a loaded snapshot) leaks in. Weights are left alone.
+- `Shift+Z`: forget all learning, resetting every weight to 1.0 (`unlearn`).
 - `r`: randomly strike roughly one tenth of the cells.
 - `a`: add a chart probe at the cell under the mouse (`probe X Y`).
 - `d`: delete a chart probe at the cell under the mouse (`deleteprobe X Y`).
@@ -166,6 +167,7 @@ enable X Y           Make a normal cell
 transducer X Y       Make a transducer cell: burns like a normal cell, but emits teaching signal instead of light
 disable X Y          Remove a cell
 settle               Flame off, energy full where enabled
+unlearn              Reset every cell's weight to 1.0 (forget all learning)
 probe X Y            Add a chart probe
 deleteprobe X Y      Delete the chart probe at a cell
 grid SIZE            Resize the grid to SIZE x SIZE, keeping the pattern centred

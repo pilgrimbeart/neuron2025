@@ -209,6 +209,11 @@ class SimulatorApp:
         self.state.reset_energy_and_flame()
         print("Settled: flame off, energy full where enabled")
 
+    def unlearn(self) -> None:
+        self.push_undo_state()
+        self.state.reset_weights()
+        print("Unlearned: every weight reset to 1.0")
+
     def console_grid(self, size_str: str) -> None:
         try:
             size = int(size_str)

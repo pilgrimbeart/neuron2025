@@ -53,6 +53,9 @@ class State:
         self.kind_array[:] = kind
         self.weight_array[:] = 1.0
 
+    def reset_weights(self) -> None:
+        self.weight_array[:] = 1.0
+
     def reset_energy_and_flame(self) -> None:
         """Flame off, energy full wherever there is a cell."""
         self.energy_array[:] = np.where(self.kind_array != physics.EMPTY, 1.0, 0.0)

@@ -94,6 +94,53 @@ class Teaching:
     up: float = 0.2          # weight gained by a cause, per reward
     down: float = 0.05       # weight lost by a cell that fired beside the route without causing it, per reward
     tol: float = 0.3         # attention's cause tolerance (attention.causes)
+    local: bool = False      # pass attention cell to cell (local_attention_step) instead of tracing it back (attention.relay)
+
+
+FIRE_TRACE_TIME = 3.0        # seconds for a cell's fire trace to fade to 1/e
+
+
+def shifted(a: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """b[x, y] = a[x + dx, y + dy]: each cell's view of its neighbour at offset (dx, dy); 0 beyond the edge."""
+    b = np.zeros_like(a)
+    w, h = a.shape
+    b[max(0, -dx):min(w, w - dx), max(0, -dy):min(h, h - dy)] = a[max(0, dx):min(w, w + dx), max(0, dy):min(h, h + dy)]
+    return b
+
+
+def local_attention_step(trace: np.ndarray, attended: np.ndarray, suspect: np.ndarray, tol: float) -> None:
+    """Attention passes one hop back, cell to cell, using only what each cell can see of its neighbours.
+
+    Every cell shows its neighbours its fire trace (1 when it ignites, fading). An attended cell finds, among its
+    neighbours that fired before it (smaller trace), the one that fired first; if none, among the cells two away,
+    which light also reaches. It emits an acceptance level: a cause fired at least (1 - tol) of that neighbour's
+    lead before it, i.e. its trace is at most trace^tol * earliest^(1 - tol). A neighbour in that ring whose own
+    trace is at or below the level it receives becomes attended; a cell listens only to the attended neighbour that
+    fired soonest after it, the one it could have caused. A cell that fired, has an
+    attended neighbour and is not accepted is a suspect: if it is never accepted, it is a leak."""
+    levels, earlier_exists = [], np.zeros(trace.shape, dtype=bool)
+    for ring in (attention.NEIGHBOURS, attention.FAR_NEIGHBOURS):
+        earliest = np.full(trace.shape, np.inf)
+        for dx, dy in ring:
+            n = shifted(trace, dx, dy)
+            earliest = np.where((n > 0) & (n < trace), np.minimum(earliest, n), earliest)
+        use = np.isfinite(earliest) & ~earlier_exists
+        earlier_exists |= use
+        level = np.where(attended & use, trace ** tol * np.where(use, earliest, 1.0) ** (1 - tol), 0.0)
+        # each cell listens to the attended neighbour in this ring that fired soonest after it (the one it could have caused)
+        next_after, received = np.full(trace.shape, np.inf), np.zeros(trace.shape)
+        for dx, dy in ring:
+            n, n_level = shifted(trace, dx, dy), shifted(level, dx, dy)
+            closer = (n_level > 0) & (n > trace) & (n < next_after)
+            next_after = np.where(closer, n, next_after)
+            received = np.where(closer, n_level, received)
+        levels.append(received)
+    accept = ~attended & (trace > 0) & ((trace <= levels[0]) | (trace <= levels[1]))
+    next_to_attended = np.zeros(trace.shape, dtype=bool)
+    for dx, dy in attention.NEIGHBOURS:
+        next_to_attended |= shifted(attended, dx, dy)
+    suspect |= ~attended & ~accept & (trace > 0) & next_to_attended
+    attended |= accept
 
 
 class Run:
@@ -140,6 +187,11 @@ class Run:
         self.fired_at = np.full(s.grid_size, np.inf)
         self.peak = np.zeros(s.grid_size)
         self.steps = 0
+        self.trace = np.zeros(s.grid_size)             # fire trace: 1 when a cell ignites, fading with FIRE_TRACE_TIME
+        self.was_burning = np.zeros(s.grid_size, dtype=bool)
+        self.attended = np.zeros(s.grid_size, dtype=bool)
+        self.suspect = np.zeros(s.grid_size, dtype=bool)   # fired, next to an attended cell, not (yet) accepted as a cause
+        self.seeded = False
 
     def advance(self) -> dict | None:
         """One time step of the current trial; at its end, the teacher's response and the trial's result."""
@@ -149,13 +201,30 @@ class Run:
         self.steps += 1
         self.fired_at[(s.flame_array > 0) & np.isinf(self.fired_at)] = self.steps * self.dt
         self.peak = np.maximum(self.peak, s.weight_array * s.illumination_array)
+        burning = s.flame_array > 0
+        self.trace *= np.exp(-self.dt / FIRE_TRACE_TIME)
+        self.trace[burning & ~self.was_burning] = 1.0
+        self.was_burning = burning
+        if self.rewarding and self.teaching.local:
+            o = self.at['o']
+            first_fired_now = self.fired_at[o] == self.steps * self.dt
+            if not self.seeded and first_fired_now and RESPONSE[0] <= self.fired_at[o] <= RESPONSE[1]:
+                self.attended[o], self.seeded = True, True     # the teacher pays attention to o as it fires
+            if self.seeded:
+                local_attention_step(self.trace, self.attended, self.suspect, self.teaching.tol)
         if self.steps < round(TRIAL / self.dt):
             return None
         fired_at, t_o = self.fired_at, self.fired_at[self.at['o']]
         attended = np.zeros(s.grid_size, dtype=bool)
-        rewarded = self.rewarding and RESPONSE[0] <= t_o <= RESPONSE[1]
-        if rewarded:
-            attended = self.reward(fired_at)
+        if self.teaching.local:
+            rewarded = self.seeded
+            if rewarded:
+                attended = self.attended.copy()
+                self.apply(attended, self.suspect & ~attended & self.plastic)
+        else:
+            rewarded = self.rewarding and RESPONSE[0] <= t_o <= RESPONSE[1]
+            if rewarded:
+                attended = self.reward(fired_at)
         if self.rewarding:
             t, T = self.teaching, self.temperature
             T += t.relax * (t.temperature - T)
@@ -173,11 +242,15 @@ class Run:
         t, w = self.teaching, self.state.weight_array
         attended = attention.relay(fired_at, self.at['o'], t.tol)
         beside = scipy.ndimage.binary_dilation(attended, np.ones((3, 3), dtype=bool)) & ~attended & self.plastic
-        leaked = beside & np.isfinite(fired_at)
+        self.apply(attended, beside & np.isfinite(fired_at))
+        return attended
+
+    def apply(self, attended: np.ndarray, leaked: np.ndarray) -> None:
+        """Causes (cells attention reached) strengthen; leaks (fired beside them without causing them) weaken."""
+        t, w = self.teaching, self.state.weight_array
         up = attended & self.plastic
         w[up] = np.minimum(w[up] + t.up, self.config.get('WEIGHT_MAX'))
         w[leaked] = np.maximum(w[leaked] - t.down, self.config.get('WEIGHT_MIN'))
-        return attended
 
     def rates(self, trials: int = 10) -> dict:
         """How often o fires for a, for b and for no input, with no teacher."""
@@ -252,7 +325,8 @@ class Demo:
 
 
 SETTINGS = {
-    'near misses, attention within 2 cells excuses': Teaching(),
+    'attention traced back (experiment code)': Teaching(),
+    'attention passed cell to cell (local)': Teaching(local=True),
 }
 
 

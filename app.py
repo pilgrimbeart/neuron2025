@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import random
 import sys
 import time
@@ -65,6 +66,8 @@ class SimulatorApp:
 
         self.config = SimulationConfig()
         self.selected_var = 0
+        self.trainer = None
+        self.speed = 1
         self.state = State((32, 32))
         self.show_only = ""
         self.running = True
@@ -567,10 +570,75 @@ class SimulatorApp:
             dispatch_keydown(self, event)
 
     def update(self, delta_s: float) -> None:
+        if self.trainer is not None and self.trainer.state is not self.state:
+            self.trainer = None
+            print("Broadcast training stopped (the grid was replaced)")
         if (not self.paused) or self.do_step:
-            self.state.update(delta_s, self.config)
-            self.chart_panel.update(delta_s, self.state)
+            for _ in range(self.speed):
+                if self.trainer is None:
+                    self.state.update(delta_s, self.config)
+                    self.chart_panel.update(delta_s, self.state)
+                    continue
+                summary = self.trainer.step(1 / 50, self.config)
+                self.chart_panel.update(1 / 50, self.state)
+                if summary is not None:
+                    self.report_trial(summary)
         self.do_step = False
+
+    def report_trial(self, summary: dict) -> None:
+        w = self.state.weight_array[self.trainer.plastic]
+        print(f"trial {self.trainer.trials}: x {'fired' if summary['x'] else '-'}, y {'fired' if summary['y'] else '-'}, "
+              f"active {summary['active']:.0%}, weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
+
+    def console_broadcast(self, arg: str) -> None:
+        import broadcast
+        if arg == "stop":
+            self.trainer = None
+            print("Broadcast training stopped")
+            return
+        try:
+            seed = int(arg)
+        except ValueError:
+            print(f"Invalid seed '{arg}'")
+            return
+        self.push_undo_state()
+        medium = broadcast.Sheet(seed=seed, **broadcast.DEMO_SHEET)
+        state, at, plastic = medium.build()
+        self.state = state
+        self.cells_panel.set_grid_size(state.grid_size)
+        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in at.items()])
+        self.config.update_from_dict(broadcast.broadcast_config().vars)
+        self.trainer = broadcast.Trainer(state, at, plastic, dataclasses.replace(broadcast.DEMO_RULE), jitter=medium.jitter, seed=seed)
+        self.chart_panel.trig()
+        print(f"Broadcast training on a full sheet with random starting weights (seed {seed}): each trial strikes a; reward when x fires, "
+              f"punishment when y fires; press w to watch the weights")
+
+    def console_rule(self, args: list[str]) -> None:
+        if self.trainer is None:
+            print("No broadcast training running (start one with: broadcast SEED)")
+            return
+        rule = self.trainer.rule
+        if args:
+            name, value = args
+            if not hasattr(rule, name):
+                print(f"Unknown rule setting '{name}'")
+                return
+            current = getattr(rule, name)
+            try:
+                setattr(rule, name, type(current)(value) if not isinstance(current, bool) else value.lower() in ("1", "true", "on"))
+            except ValueError:
+                print(f"Invalid value '{value}'")
+                return
+        print("Rule: " + ", ".join(f"{f.name}={getattr(rule, f.name)}" for f in dataclasses.fields(rule)))
+
+    def console_speed(self, n_str: str) -> None:
+        try:
+            n = int(n_str)
+        except ValueError:
+            print(f"Invalid speed '{n_str}'")
+            return
+        self.speed = max(1, min(n, 50))
+        print(f"Speed {self.speed}x")
 
     def render(self, delta_s: float) -> None:
         self.screen.fill((0, 0, 0))

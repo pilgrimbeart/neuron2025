@@ -63,6 +63,7 @@ COMMANDS = [
     Command("broadcast stop", "Stop broadcast or attention training", lambda app, a: app.console_broadcast("stop")),
     Command("attention SEED", "Train a full sheet live by paying attention to x when it fires (attention runs back along the route that caused it)", lambda app, a: app.console_attention(a[0])),
     Command("attention SEED MAPPING", "Train a two-input sheet live by paying attention: straight (a to x, b to y) or crossed (a to y, b to x)", lambda app, a: app.console_attention(a[0], a[1])),
+    Command("twophase SEED", "Run the two-loop experiment live: adaptation grows routes, then reward teaches a, then b", lambda app, a: app.console_twophase(a[0])),
     Command("rule", "Show the training rule's settings", lambda app, a: app.console_rule([])),
     Command("rule FIELD VALUE", "Change a training rule setting live (e.g. rule cost 0.005)", lambda app, a: app.console_rule(a)),
     Command("speed N", "Run N simulation steps per frame (1..50)", lambda app, a: app.console_speed(a[0])),

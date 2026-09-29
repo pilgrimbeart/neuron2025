@@ -15,6 +15,16 @@ approaches its threshold (rate = RATE_AT_THRESHOLD * exp((x - 1) / T), with x = 
 certain ignition from x = 1 as usual). T = 0 is physics.py's deterministic rule. So a gate that has been closed just
 below its threshold occasionally lets a pulse through, and the teacher can reward it.
 
+Temperature is per cell (a local thermostat): while being taught, a cell that nearly took part (lit to at least 15%
+of its threshold, but didn't fire) and that attention neither reached nor passed within light's reach (two cells)
+warms a little each trial,
+up to a limit; a cell attention reaches cools back to the base; and all heat fades slowly. So chance firing
+concentrates at near misses that go unrewarded, such as a closed gate beside a stopped pulse. (A cell beside a
+rewarded route, such as a competing gate closing, must not warm; nor must a cell that fired, or heat spreads through
+chance firing.) So chance
+firing concentrates where activity keeps arriving and going nowhere (a closed gate beside a stopped pulse), and
+stays low on routes that are working or idle.
+
 The test: teach a (reward o on a-trials); then a must pass and b must not. Then teach b; then b must pass and a
 must not. Measured throughout: how often o fires for each input and with no input at all.
 
@@ -33,9 +43,12 @@ import attention
 import physics
 from broadcast import broadcast_config
 from gates import hline
-from model import State
+from model import SimulationConfig, State
 
 TRIAL = 10.0                 # seconds per trial: long enough for a pulse to cross
+# cells within light's reach of a cell (two cells, as attention.FAR_NEIGHBOURS): attention passing this close to a cell
+# means its surroundings are working, so its own silence is not a failure
+LIGHT_REACH = np.array([[dx * dx + dy * dy <= 5 for dy in range(-2, 3)] for dx in range(-2, 3)])
 RESPONSE = (1.0, 6.0)        # the teacher only rewards o firing this many seconds after the input: a response to it
 RATE_AT_THRESHOLD = 5.0      # chance ignitions per second of a cell whose light just reaches its threshold
 
@@ -70,54 +83,93 @@ class Layout:
 
 @dataclass
 class Teaching:
-    temperature: float = 0.1     # while being taught
+    temperature: float = 0.05    # while being taught (with a thermostat: the base, to which rewarded cells cool)
     use_temperature: float = 0.0 # while being used (tested)
+    heat: float = 0.01           # thermostat: warming per teaching trial of a lit cell attention didn't reach or pass (0: off)
+    max_temperature: float = 0.12  # keep below the temperature at which every gate leaks (about 0.15)
+    cool: float | None = None    # temperature a cell drops to when attention reaches it (None: the base temperature)
+    relax: float = 0.05          # per teaching trial, every cell's temperature moves this fraction back to the base
+    lit: float = 0.15            # "lit": received at least this fraction of its threshold light
+    near_miss_only: bool = True  # warm only cells lit to `lit` of their threshold that didn't fire (not cells that fired)
     up: float = 0.2          # weight gained by a cause, per reward
     down: float = 0.05       # weight lost by a cell that fired beside the route without causing it, per reward
     tol: float = 0.3         # attention's cause tolerance (attention.causes)
 
 
 class Run:
+    """One sheet: adaptation (phase 1) by self.adapter, then trials of reward-driven learning, either whole (trial) or
+    one time step at a time (begin, then advance until it returns the trial's result)."""
+
     def __init__(self, seed: int, teaching: Teaching | None = None, adapt_trials: int = 200):
         self.state, self.at, self.plastic, jitter = Layout(seed).build()
-        trainer = attention.Trainer(self.state, self.at, self.plastic, attention.Rule(), [('a', 'o'), ('b', 'o')],
-                                    jitter=jitter, seed=seed, outputs=('o',))
+        self.adapter = attention.Trainer(self.state, self.at, self.plastic, attention.Rule(), [('a', 'o'), ('b', 'o')],
+                                         jitter=jitter, seed=seed, outputs=('o',))
         self.config = broadcast_config()
-        self.phase1 = [trainer.trial(self.config) for _ in range(adapt_trials)]
+        self.phase1 = [self.adapter.trial(self.config) for _ in range(adapt_trials)]
         self.teaching = teaching or Teaching()
         self.rng = np.random.default_rng(2000 + seed)
         self.dt = 1 / 50
+        self.temperature = np.full(self.state.grid_size, self.teaching.temperature)
 
-    def chance_ignitions(self, T: float) -> None:
-        """Ignite some dark cells at random, more readily the nearer their light is to their threshold."""
-        if T <= 0:
+    def chance_ignitions(self, T) -> None:
+        """Ignite some dark cells at random, more readily the nearer their light is to their threshold. T is one
+        temperature or one per cell."""
+        if np.max(T) <= 0:
             return
         s, p = self.state, self.config.vars
         ready = self.plastic & (s.flame_array == 0) & (s.energy_array >= p['STRIKE_LEVEL'])
         x = s.weight_array * s.illumination_array / p['MIN_STRIKE']
-        rate = RATE_AT_THRESHOLD * np.exp(np.minimum(x - 1, 0) / T)
+        rate = RATE_AT_THRESHOLD * np.exp(np.minimum(x - 1, 0) / np.maximum(T, 1e-6))
         fire = ready & (self.rng.random(s.grid_size) < -np.expm1(-rate * self.dt))
         s.flame_array[fire] = p['STRIKE_LEVEL']
 
     def trial(self, label: str | None, reward: bool) -> bool:
         """Strike label (or nothing), run for TRIAL seconds, and return whether o fired. With reward, if o fired,
         the teacher rewards what the network just did."""
+        self.begin(label, reward)
+        while (result := self.advance()) is None:
+            pass
+        return result['o']
+
+    def begin(self, label: str | None, reward: bool) -> None:
         s = self.state
-        T = self.teaching.temperature if reward else self.teaching.use_temperature
         s.reset_energy_and_flame()        # separate trials: nothing left over from the last one can pass for a response
         if label is not None:
             s.strike(self.at[label], self.config)
-        fired_at = np.full(s.grid_size, np.inf)
-        for step in range(round(TRIAL / self.dt)):
-            s.update(self.dt, self.config)
-            self.chance_ignitions(T)
-            fired_at[(s.flame_array > 0) & np.isinf(fired_at)] = (step + 1) * self.dt
-        t_o = fired_at[self.at['o']]
-        if reward and RESPONSE[0] <= t_o <= RESPONSE[1]:
-            self.reward(fired_at)
-        return bool(np.isfinite(t_o))
+        self.rewarding = reward
+        self.fired_at = np.full(s.grid_size, np.inf)
+        self.peak = np.zeros(s.grid_size)
+        self.steps = 0
 
-    def reward(self, fired_at: np.ndarray) -> None:
+    def advance(self) -> dict | None:
+        """One time step of the current trial; at its end, the teacher's response and the trial's result."""
+        s = self.state
+        s.update(self.dt, self.config)
+        self.chance_ignitions(self.temperature if self.rewarding else self.teaching.use_temperature)
+        self.steps += 1
+        self.fired_at[(s.flame_array > 0) & np.isinf(self.fired_at)] = self.steps * self.dt
+        self.peak = np.maximum(self.peak, s.weight_array * s.illumination_array)
+        if self.steps < round(TRIAL / self.dt):
+            return None
+        fired_at, t_o = self.fired_at, self.fired_at[self.at['o']]
+        attended = np.zeros(s.grid_size, dtype=bool)
+        rewarded = self.rewarding and RESPONSE[0] <= t_o <= RESPONSE[1]
+        if rewarded:
+            attended = self.reward(fired_at)
+        if self.rewarding:
+            t, T = self.teaching, self.temperature
+            T += t.relax * (t.temperature - T)
+            if t.heat:
+                near = self.peak >= t.lit * self.config.get('MIN_STRIKE')
+                lit = self.plastic & (near & np.isinf(fired_at) if t.near_miss_only else near | np.isfinite(fired_at))
+                ignored = lit & ~scipy.ndimage.binary_dilation(attended, LIGHT_REACH)
+                T[ignored] = np.minimum(T[ignored] + t.heat, t.max_temperature)
+            T[attended] = t.temperature if t.cool is None else t.cool
+        return {'o': bool(np.isfinite(t_o)), 'rewarded': bool(rewarded), 'attended': int((attended & self.plastic).sum()),
+                'active': float(np.isfinite(fired_at)[self.plastic].mean())}
+
+    def reward(self, fired_at: np.ndarray) -> np.ndarray:
+        """Strengthen the causes of o's firing, weaken the leaks beside them; return the cells attention reached."""
         t, w = self.teaching, self.state.weight_array
         attended = attention.relay(fired_at, self.at['o'], t.tol)
         beside = scipy.ndimage.binary_dilation(attended, np.ones((3, 3), dtype=bool)) & ~attended & self.plastic
@@ -125,17 +177,18 @@ class Run:
         up = attended & self.plastic
         w[up] = np.minimum(w[up] + t.up, self.config.get('WEIGHT_MAX'))
         w[leaked] = np.maximum(w[leaked] - t.down, self.config.get('WEIGHT_MIN'))
+        return attended
 
     def rates(self, trials: int = 10) -> dict:
         """How often o fires for a, for b and for no input, with no teacher."""
         return {k: sum(self.trial(None if k == '-' else k, False) for _ in range(trials)) / trials for k in ('a', 'b', '-')}
 
 
-def score(seed: int, temperature: float = 0.1, teach_trials: int = 60, verbose: bool = False, use_temperature: float = 0.0) -> dict:
+def score(seed: int, teaching: Teaching | None = None, teach_trials: int = 150, verbose: bool = False) -> dict:
     """Teach a, then b; after each, measure how often o fires for a, b and nothing."""
-    run = Run(seed, Teaching(temperature=temperature, use_temperature=use_temperature))
+    run = Run(seed, teaching)
     log = lambda *a: verbose and print(*a, flush=True)
-    result = {'seed': seed, 'T': temperature, 'adapted': run.rates(4)}
+    result = {'seed': seed, 'adapted': run.rates(4)}
     log('after adaptation', result['adapted'])
     for on in ('a', 'b'):
         result[f'{on}_rewards'] = sum(run.trial(on, True) for _ in range(teach_trials))
@@ -146,17 +199,73 @@ def score(seed: int, temperature: float = 0.1, teach_trials: int = 60, verbose: 
     return result
 
 
+class Demo:
+    """The whole experiment, one time step at a time, for the app (same interface as attention.Trainer): adaptation,
+    then teaching a, then teaching b, with a test of each input (no teacher, no randomness) every test_every
+    teaching trials. Each finished trial returns a summary with a line of text."""
+
+    def __init__(self, seed: int, adapt_trials: int = 200, teach_trials: int = 150, test_every: int = 10):
+        self.run = Run(seed, adapt_trials=0)
+        self.state, self.at, self.plastic, self.rule = self.run.state, self.run.at, self.run.plastic, self.run.teaching
+        plan = [('adapt', None)] * adapt_trials
+        for on in ('a', 'b'):
+            for n in range(1, teach_trials + 1):
+                plan.append(('teach', on))
+                if n % test_every == 0:
+                    plan += [('test', 'a'), ('test', 'b')]
+        self.plan = iter(plan)
+        self.current = None
+        self.trials = 0
+        self.max_temperature = self.rule.max_temperature
+
+    @property
+    def temperature(self) -> np.ndarray:
+        """Each sheet cell's teaching temperature, for the app's weight view (0 off the sheet)."""
+        return np.where(self.plastic, self.run.temperature, 0.0)
+
+    def step(self, dt: float, config: SimulationConfig) -> dict | None:
+        if self.current is None:
+            self.current = next(self.plan, ('done', None))
+            if self.current[0] in ('teach', 'test'):
+                self.run.begin(self.current[1], self.current[0] == 'teach')
+        kind, label = self.current
+        if kind == 'done':
+            self.state.update(dt, config)
+            return None
+        if kind == 'adapt':
+            r = self.run.adapter.step(dt, self.run.config)
+            if r is None:
+                return None
+            text = f"adapting: {r['input']} -> o {'fired' if r['o'] else '-'}, active {r['active']:.0%}, attention reached {r['attended']} cells"
+        else:
+            r = self.run.advance()
+            if r is None:
+                return None
+            if kind == 'teach':
+                text = (f"teaching {label}: o {'fired, rewarded' if r['rewarded'] else 'fired, too late or early' if r['o'] else '-'}, "
+                        f"hottest cell T {self.run.temperature[self.plastic].max():.2f}")
+            else:
+                text = f"   TEST {label} alone (no teacher, T 0): o {'FIRES' if r['o'] else 'silent'}"
+        self.current = None
+        self.trials += 1
+        return {**r, 'text': text}
+
+
+SETTINGS = {
+    'near misses, attention within 2 cells excuses': Teaching(),
+}
+
+
 if __name__ == '__main__':
     from multiprocessing import Pool
     seeds = range(int(sys.argv[1]) if len(sys.argv) > 1 else 8)
-    temperatures = (0.1, 0.12, 0.15)
-    jobs = [(s, T) for T in temperatures for s in seeds]
+    jobs = [(name, s) for name in SETTINGS for s in seeds]
     with Pool() as pool:
-        results = pool.starmap(score, [(s, T, 150) for s, T in jobs])
+        results = pool.starmap(score, [(s, SETTINGS[name]) for name, s in jobs])
     fmt = lambda d: f"a{d['a']:.1f} b{d['b']:.1f} -{d['-']:.1f}"
-    for T in temperatures:
-        rs = [r for r in results if r['T'] == T]
-        print(f"T {T}: ok {sum(r['ok'] for r in rs)}/{len(rs)}")
+    for name in SETTINGS:
+        rs = [r for (n, _), r in zip(jobs, results) if n == name]
+        print(f"{name}: ok {sum(r['ok'] for r in rs)}/{len(rs)}")
         for r in rs:
             print(f"   seed {r['seed']}: adapted [{fmt(r['adapted'])}]  after a [{fmt(r['after_a'])}]  after b [{fmt(r['after_b'])}]"
                   f"  rewards {r['a_rewards']},{r['b_rewards']}", flush=True)

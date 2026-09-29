@@ -31,12 +31,17 @@ class CellsPanel:
         self.pixel_scale = self.size[0] / self.grid_size[0]
         self.surface = pygame.Surface(self.grid_size)
 
-    def render(self, state: State, config: SimulationConfig, show_only: str, probes: list[dict]) -> None:
-        """Red = energy, green = flame, blue = teaching signal received. 'E', 'I' and 'W' show energy,
-        illumination and weight in grey."""
+    def render(self, state: State, config: SimulationConfig, show_only: str, probes: list[dict],
+               temperature: np.ndarray | None = None, max_temperature: float = 1.0) -> None:
+        """Red = energy, green = flame, blue = teaching signal received. 'E' and 'I' show energy and illumination
+        in grey. 'W' shows weight in blue (WEIGHT_MAX = full) and, when a training experiment provides one, each
+        cell's temperature in green (max_temperature = full)."""
         if show_only == "W":
-            grey = np.where(state.kind_array != 0, state.weight_array / config.get("WEIGHT_MAX"), 0.0)   # neutral 1.0 = mid-grey
-            rgb = np.repeat(grey[:, :, None], 3, axis=2)
+            present = state.kind_array != 0
+            rgb = np.zeros(state.grid_size + (3,))
+            rgb[:, :, 2] = np.where(present, state.weight_array / config.get("WEIGHT_MAX"), 0.0)   # neutral 1.0 = half blue
+            if temperature is not None:
+                rgb[:, :, 1] = np.where(present, temperature / max_temperature, 0.0)
         elif show_only == "E":
             grey = state.energy_array
             rgb = np.repeat(grey[:, :, None], 3, axis=2)

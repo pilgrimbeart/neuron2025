@@ -93,7 +93,7 @@ The grid view can show the combined state or isolate one field:
 - default view: red = energy, green = flame (×2), blue = teaching signal received. An enabled cell at rest is bright red and an empty one black; a cell just ignited looks yellow and turns green as its energy drains; a recovering cell glows dim red. Cells never drop below 10% grey, and transducers always carry an extra 40% blue,
 - `e`: energy only, grayscale,
 - `i`: illumination (light from other cells) only, grayscale, with the ignition threshold at mid-grey,
-- `w`: weight only, grayscale: neutral (1.0) is mid-grey, the maximum (2.0) white. This is where learning shows.
+- `w`: weight in blue: neutral (1.0) is half blue, the maximum (2.0) full blue. This is where learning shows. When a training experiment gives each cell a temperature (`twophase`), it shows in green (the experiment's maximum = full green).
 
 Chart traces use the same colours: energy red, flame green, illumination white.
 

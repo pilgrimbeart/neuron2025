@@ -602,9 +602,10 @@ class SimulatorApp:
 
     def report_trial(self, summary: dict) -> None:
         w = self.state.weight_array[self.trainer.plastic]
-        print(f"trial {self.trainer.trials}: {summary['input']} -> x {'fired' if summary['x'] else '-'}, y {'fired' if summary['y'] else '-'}, "
-              f"active {summary['active']:.0%}, " + (f"attended {summary['attended']} cells, " if 'attended' in summary else "")
-              + f"weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
+        text = summary.get('text') or (
+            f"{summary['input']} -> x {'fired' if summary['x'] else '-'}, y {'fired' if summary['y'] else '-'}, active {summary['active']:.0%}"
+            + (f", attended {summary['attended']} cells" if 'attended' in summary else ""))
+        print(f"trial {self.trainer.trials}: {text}, weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
 
     def console_broadcast(self, arg: str, mapping: str | None = None) -> None:
         import broadcast
@@ -612,39 +613,58 @@ class SimulatorApp:
             self.trainer = None
             print("Training stopped")
             return
-        self.start_training(broadcast.demo, arg, mapping, "broadcast reward: reward when {good}, punishment when {bad}")
+        if (seed := self.parse_training(arg, mapping)) is not None:
+            self.start_training(broadcast.demo(seed, mapping), self.describe(seed, mapping, "broadcast reward: reward when {good}, punishment when {bad}"))
 
     def console_attention(self, arg: str, mapping: str | None = None) -> None:
         import attention
-        self.start_training(attention.demo, arg, mapping, "paying attention: attention to the output when {good}")
+        if (seed := self.parse_training(arg, mapping)) is not None:
+            self.start_training(attention.demo(seed, mapping), self.describe(seed, mapping, "paying attention: attention to the output when {good}"))
 
-    def start_training(self, demo, seed_str: str, mapping: str | None, how: str) -> None:
+    def console_twophase(self, arg: str) -> None:
+        import twophase
+        if (seed := self.parse_training(arg, None)) is not None:
+            self.start_training(twophase.Demo(seed), f"Two loops on a random sheet (seed {seed}): 200 trials of adaptation grow routes "
+                                "from a and b to o; then 150 trials teaching a, then 150 teaching b, by reward only (cells fire by chance "
+                                "while being taught; each cell's temperature rises where activity goes unrewarded); every 10 teaching "
+                                "trials, a and b are tested alone. Press w to watch the weights; speed 50 to hurry")
+
+    def parse_training(self, seed_str: str, mapping: str | None) -> int | None:
         import broadcast
         try:
             seed = int(seed_str)
         except ValueError:
             print(f"Invalid seed '{seed_str}'")
-            return
+            return None
         if mapping is not None and mapping not in broadcast.MAPPINGS:
             print(f"Unknown mapping '{mapping}' (one of: {', '.join(broadcast.MAPPINGS)})")
-            return
-        self.push_undo_state()
-        self.trainer = demo(seed, mapping)
-        self.state = self.trainer.state
-        self.cells_panel.set_grid_size(self.state.grid_size)
-        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in self.trainer.at.items()])
-        self.config.update_from_dict(broadcast.broadcast_config().vars)
-        self.chart_panel.trig()
+            return None
+        return seed
+
+    @staticmethod
+    def describe(seed: int, mapping: str | None, how: str) -> str:
+        import broadcast
         pairs = {"a": "x"} if mapping is None else broadcast.MAPPINGS[mapping]
         good = " or ".join(f"{i} reaches {o}" for i, o in pairs.items())
         bad = " or ".join(f"{i} reaches {'y' if o == 'x' else 'x'}" for i, o in pairs.items())
         trials = "each trial strikes a" if mapping is None else "trials alternate a and b"
-        print(f"Training a full sheet with random starting weights (seed {seed}) by {how.format(good=good, bad=bad)}; "
-              f"{trials}; press w to watch the weights")
+        return (f"Training a full sheet with random starting weights (seed {seed}) by {how.format(good=good, bad=bad)}; "
+                f"{trials}; press w to watch the weights")
+
+    def start_training(self, trainer, description: str) -> None:
+        import broadcast
+        self.push_undo_state()
+        self.trainer = trainer
+        self.state = trainer.state
+        self.cells_panel.set_grid_size(self.state.grid_size)
+        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in trainer.at.items()])
+        self.config.update_from_dict(broadcast.broadcast_config().vars)
+        self.chart_panel.trig()
+        print(description)
 
     def console_rule(self, args: list[str]) -> None:
         if self.trainer is None:
-            print("No training running (start one with: broadcast SEED or attention SEED)")
+            print("No training running (start one with: broadcast SEED, attention SEED or twophase SEED)")
             return
         rule = self.trainer.rule
         if args:
@@ -673,7 +693,9 @@ class SimulatorApp:
         self.screen.fill((0, 0, 0))
         self.console_panel.render(delta_s, self.paused)
         self.chart_panel.render(self.config)
-        self.cells_panel.render(self.state, self.config, self.show_only, self.chart_panel.probes)
+        temperature = getattr(self.trainer, "temperature", None)
+        self.cells_panel.render(self.state, self.config, self.show_only, self.chart_panel.probes,
+                                temperature, getattr(self.trainer, "max_temperature", 1.0))
         if self.help_visible:
             self.help_overlay.render(self.help_lines)
         self.recorder.add_frame(self.screen, delta_s)

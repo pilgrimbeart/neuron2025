@@ -23,6 +23,8 @@ from broadcast import MAPPINGS, MAX_WAIT, Sheet, broadcast_config
 from model import SimulationConfig, State
 
 NEIGHBOURS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+# light reaches about two cells, so a cell with no earlier neighbour may have been lit from the next ring out
+FAR_NEIGHBOURS = [(dx, dy) for dx in range(-2, 3) for dy in range(-2, 3) if max(abs(dx), abs(dy)) == 2 and dx * dx + dy * dy <= 5]
 
 
 @dataclass
@@ -36,15 +38,17 @@ class Rule:
 
 
 def causes(fired_at: np.ndarray, xy: tuple[int, int], tol: float) -> list[tuple[int, int]]:
-    """The neighbours of xy that fired first before it (ties within tol of the earliest's lead)."""
+    """The cells that fired first before xy among its neighbours (ties within tol of the earliest's lead); if none
+    of its neighbours fired before it, among the cells two away, which light also reaches."""
     x, y = xy
     t = fired_at[xy]
-    earlier = [(x + dx, y + dy) for dx, dy in NEIGHBOURS
-               if 0 <= x + dx < fired_at.shape[0] and 0 <= y + dy < fired_at.shape[1] and fired_at[x + dx, y + dy] < t]
-    if not earlier:
-        return []
-    lead = t - min(fired_at[n] for n in earlier)
-    return [n for n in earlier if t - fired_at[n] >= (1 - tol) * lead]
+    for ring in (NEIGHBOURS, FAR_NEIGHBOURS):
+        earlier = [(x + dx, y + dy) for dx, dy in ring
+                   if 0 <= x + dx < fired_at.shape[0] and 0 <= y + dy < fired_at.shape[1] and fired_at[x + dx, y + dy] < t]
+        if earlier:
+            lead = t - min(fired_at[n] for n in earlier)
+            return [n for n in earlier if t - fired_at[n] >= (1 - tol) * lead]
+    return []
 
 
 def relay(fired_at: np.ndarray, start: tuple[int, int], tol: float) -> np.ndarray:
@@ -67,9 +71,10 @@ class Trainer:
     from it and strengthen every cell it reaches; once quiet, weaken every cell that fired unattended."""
 
     def __init__(self, state: State, at: dict, plastic: np.ndarray, rule: Rule, schedule: list, jitter: np.ndarray | None = None,
-                 seed: int = 0):
+                 seed: int = 0, outputs: tuple[str, ...] = ('x', 'y')):
         """schedule: [(input label, output label to pay attention to, or None)], cycled one per trial."""
         self.state, self.at, self.plastic, self.rule, self.schedule = state, at, plastic, rule, schedule
+        self.outputs = outputs
         self.learn = True
         self.trials = 0
         self.rng = np.random.default_rng(1000 + seed)
@@ -81,7 +86,7 @@ class Trainer:
         self.t = 0.0
         self.input, self.watch = self.schedule[self.trials % len(self.schedule)]
         self.fired_at = np.full(self.state.grid_size, np.inf)
-        self.fired = {'x': False, 'y': False}
+        self.fired = {k: False for k in self.outputs}
         self.attended = np.zeros(self.state.grid_size, dtype=bool)
         explore = self.rule.explore if self.learn else 0.0
         self.offset = self.rng.normal(0.0, explore, self.state.grid_size) * self.plastic if explore else np.zeros(self.state.grid_size)

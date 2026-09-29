@@ -34,6 +34,9 @@ class UndoSnapshot:
     show_only: str
 
 
+FOCUS_CLICK_GRACE_S = 0.3   # a click this soon after the window gains focus is the focusing click
+
+
 class _Tee:
     """Writes to several file-like sinks at once (used for sys.stdout)."""
 
@@ -79,6 +82,8 @@ class SimulatorApp:
         self.last_mouse_pos = (0, 0)
         self.undo_stack: list[UndoSnapshot] = []
         self.ignore_next_textinput = False
+        self.window_focused = True
+        self.focus_gained_at = 0.0
 
         self.cells_panel = CellsPanel(self.screen, (0, 0), (self.screen_height, self.screen_height), self.state.grid_size)
         self.chart_panel = ChartPanel(self.screen, (self.screen_height, 0), (self.screen_width - self.screen_height, int(self.screen_height / 2)))
@@ -540,6 +545,16 @@ class SimulatorApp:
             self.request_quit()
             return
 
+        # The click that brings the window into focus only focuses it. Depending on the platform, it arrives just before
+        # or just after the focus event, so ignore clicks until that event and for a moment after it.
+        if event.type == pygame.WINDOWFOCUSGAINED:
+            self.window_focused, self.focus_gained_at = True, time.monotonic()
+        elif event.type == pygame.WINDOWFOCUSLOST:
+            self.window_focused = False
+        if event.type == pygame.MOUSEBUTTONDOWN and (not self.window_focused or time.monotonic() - self.focus_gained_at < FOCUS_CLICK_GRACE_S):
+            self.dragging_state = None      # and don't paint if the mouse is dragged while still held
+            return
+
         if self.help_visible:
             if event.type == pygame.KEYDOWN:
                 self.help_visible = False
@@ -587,35 +602,49 @@ class SimulatorApp:
 
     def report_trial(self, summary: dict) -> None:
         w = self.state.weight_array[self.trainer.plastic]
-        print(f"trial {self.trainer.trials}: x {'fired' if summary['x'] else '-'}, y {'fired' if summary['y'] else '-'}, "
-              f"active {summary['active']:.0%}, weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
+        print(f"trial {self.trainer.trials}: {summary['input']} -> x {'fired' if summary['x'] else '-'}, y {'fired' if summary['y'] else '-'}, "
+              f"active {summary['active']:.0%}, " + (f"attended {summary['attended']} cells, " if 'attended' in summary else "")
+              + f"weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
 
-    def console_broadcast(self, arg: str) -> None:
+    def console_broadcast(self, arg: str, mapping: str | None = None) -> None:
         import broadcast
         if arg == "stop":
             self.trainer = None
-            print("Broadcast training stopped")
+            print("Training stopped")
             return
+        self.start_training(broadcast.demo, arg, mapping, "broadcast reward: reward when {good}, punishment when {bad}")
+
+    def console_attention(self, arg: str, mapping: str | None = None) -> None:
+        import attention
+        self.start_training(attention.demo, arg, mapping, "paying attention: attention to the output when {good}")
+
+    def start_training(self, demo, seed_str: str, mapping: str | None, how: str) -> None:
+        import broadcast
         try:
-            seed = int(arg)
+            seed = int(seed_str)
         except ValueError:
-            print(f"Invalid seed '{arg}'")
+            print(f"Invalid seed '{seed_str}'")
+            return
+        if mapping is not None and mapping not in broadcast.MAPPINGS:
+            print(f"Unknown mapping '{mapping}' (one of: {', '.join(broadcast.MAPPINGS)})")
             return
         self.push_undo_state()
-        medium = broadcast.Sheet(seed=seed, **broadcast.DEMO_SHEET)
-        state, at, plastic = medium.build()
-        self.state = state
-        self.cells_panel.set_grid_size(state.grid_size)
-        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in at.items()])
+        self.trainer = demo(seed, mapping)
+        self.state = self.trainer.state
+        self.cells_panel.set_grid_size(self.state.grid_size)
+        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in self.trainer.at.items()])
         self.config.update_from_dict(broadcast.broadcast_config().vars)
-        self.trainer = broadcast.Trainer(state, at, plastic, dataclasses.replace(broadcast.DEMO_RULE), jitter=medium.jitter, seed=seed)
         self.chart_panel.trig()
-        print(f"Broadcast training on a full sheet with random starting weights (seed {seed}): each trial strikes a; reward when x fires, "
-              f"punishment when y fires; press w to watch the weights")
+        pairs = {"a": "x"} if mapping is None else broadcast.MAPPINGS[mapping]
+        good = " or ".join(f"{i} reaches {o}" for i, o in pairs.items())
+        bad = " or ".join(f"{i} reaches {'y' if o == 'x' else 'x'}" for i, o in pairs.items())
+        trials = "each trial strikes a" if mapping is None else "trials alternate a and b"
+        print(f"Training a full sheet with random starting weights (seed {seed}) by {how.format(good=good, bad=bad)}; "
+              f"{trials}; press w to watch the weights")
 
     def console_rule(self, args: list[str]) -> None:
         if self.trainer is None:
-            print("No broadcast training running (start one with: broadcast SEED)")
+            print("No training running (start one with: broadcast SEED or attention SEED)")
             return
         rule = self.trainer.rule
         if args:

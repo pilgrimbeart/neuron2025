@@ -8,6 +8,7 @@ physics.py with its built-in learning rule switched off.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from dataclasses import dataclass, field
 
@@ -122,21 +123,27 @@ class Sheet:
     seed: int = 0
     box: tuple[int, int, int, int] = (6, 6, 41, 41)
     spread: float = 0.1
-    entry: int = 0             # how many cells a's wire extends into the sheet (a front rather than a single contact)
+    entry: int = 0             # how many cells each input wire extends into the sheet (a front rather than a single contact)
+    two_inputs: bool = False   # inputs a (upper) and b (lower) instead of a single a in the middle
 
     def build(self):
         x0, y0, x1, y1 = self.box
         n = self.size - 1
         mid, top, bot = (y0 + y1) // 2, y0 + (y1 - y0) // 4, y1 - (y1 - y0) // 4
+        inputs = {'a': top, 'b': bot} if self.two_inputs else {'a': mid}
         s = State((self.size, self.size))
-        for xy in [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)] + \
-                  [(x, mid) for x in range(0, x0)] + [(x, top) for x in range(x1 + 1, n + 1)] + [(x, bot) for x in range(x1 + 1, n + 1)]:
+        cells = [(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
+        cells += [(x, row) for row in inputs.values() for x in range(0, x0)]
+        cells += [(x, top) for x in range(x1 + 1, n + 1)] + [(x, bot) for x in range(x1 + 1, n + 1)]
+        for xy in cells:
             s.set_kind(xy, physics.NORMAL)
         plastic = np.zeros(s.grid_size, dtype=bool)
         plastic[x0:x1 + 1, y0:y1 + 1] = True
-        plastic[x0:x0 + self.entry, mid] = False           # a's wire inside the sheet stays fixed
+        for row in inputs.values():
+            plastic[x0:x0 + self.entry, row] = False       # input wires inside the sheet stay fixed
         self.jitter = np.random.default_rng(self.seed).normal(0, self.spread, s.grid_size) * plastic
-        return s, {'a': (0, mid), 'x': (n, top), 'y': (n, bot)}, plastic
+        at = {label: (0, row) for label, row in inputs.items()}
+        return s, {**at, 'x': (n, top), 'y': (n, bot)}, plastic
 
 @dataclass
 class Rule:
@@ -176,11 +183,13 @@ class Trainer:
     traces, and start the next trial."""
 
     def __init__(self, state: State, at: dict, plastic: np.ndarray, rule: Rule, rewards: dict = REWARDS,
-                 jitter: np.ndarray | None = None, seed: int = 0):
-        self.state, self.at, self.plastic, self.rule, self.rewards = state, at, plastic, rule, rewards
+                 jitter: np.ndarray | None = None, seed: int = 0, schedule: list | None = None):
+        """schedule: [(input label, rewards)] conditions, cycled one per trial; default [('a', rewards)]."""
+        self.state, self.at, self.plastic, self.rule = state, at, plastic, rule
+        self.schedule = schedule or [('a', rewards)]
         self.learn = True
         self.trials = 0
-        self.expect = {k: 0.0 for k in rewards}
+        self.expect = {(i, k): 0.0 for i, r in self.schedule for k in r}
         self.rng = np.random.default_rng(1000 + seed)
         self.offset = np.zeros(state.grid_size)
         state.weight_array[plastic] = rule.start + (0 if jitter is None else jitter[plastic])
@@ -189,6 +198,7 @@ class Trainer:
 
     def start_trial(self) -> None:
         self.t = 0.0
+        self.input, self.rewards = self.schedule[self.trials % len(self.schedule)]
         if self.learn and self.rule.explore:
             self.offset = self.rng.normal(0.0, self.rule.explore, self.state.grid_size) * self.plastic
         else:
@@ -197,6 +207,15 @@ class Trainer:
         self.fired = {k: False for k in self.rewards}
         self.fired_cells = np.zeros(self.state.grid_size, dtype=bool)
         self.peak_light = np.zeros(self.state.grid_size)
+
+    def test_mode(self, input_label: str) -> None:
+        """Stop learning and exploring: remove the pending trial's random offset, and run only this input from now on."""
+        self.state.weight_array -= self.offset
+        self.offset = np.zeros(self.state.grid_size)
+        self.learn = False
+        self.schedule = [(input_label, {'x': 0.0, 'y': 0.0})]
+        self.trials = 0
+        self.start_trial()
 
     def eligibility(self) -> np.ndarray:
         return self.state.light_trace_array if self.rule.trace == 'light' else self.fire_trace
@@ -216,7 +235,7 @@ class Trainer:
         """Advance one time step. Returns the trial's summary when a trial ends, else None."""
         s = self.state
         if self.t == 0.0:
-            s.strike(self.at['a'], config)
+            s.strike(self.at[self.input], config)
         before = {k: s.flame_array[self.at[k]] > 0 for k in self.rewards}
         s.update(dt, config)
         self.t += dt
@@ -227,7 +246,7 @@ class Trainer:
             if s.flame_array[self.at[k]] > 0 and not before[k] and not self.fired[k]:
                 self.fired[k] = True
                 if self.learn and sign:
-                    self.reward(sign * (1 - self.expect[k]) if self.rule.rpe else sign, config)
+                    self.reward(sign * (1 - self.expect[(self.input, k)]) if self.rule.rpe else sign, config)
         cells = s.kind_array != physics.EMPTY
         quiet = not s.flame_array.any() and s.energy_array[cells].min() >= 1.0
         if not (quiet or self.t >= MAX_WAIT):
@@ -254,9 +273,9 @@ class Trainer:
         self.fire_trace[:] = 0
         self.trials += 1
         if self.rule.rpe:
-            for k in self.expect:
-                self.expect[k] += self.rule.rpe * (self.fired[k] - self.expect[k])
-        summary = {**self.fired, 'quiet': quiet, 'active': float(self.fired_cells[self.plastic].mean())}
+            for k in self.rewards:
+                self.expect[(self.input, k)] += self.rule.rpe * (self.fired[k] - self.expect[(self.input, k)])
+        summary = {'input': self.input, **self.fired, 'quiet': quiet, 'active': float(self.fired_cells[self.plastic].mean())}
         self.start_trial()
         return summary
 
@@ -275,16 +294,52 @@ def score(medium, rule, trials: int = 150, rewarded: bool = True) -> dict:
                       seed=getattr(medium, 'seed', 0))
     for _ in range(trials):
         trainer.trial(config)
-    trainer.learn = False
+    trainer.test_mode('a')
     tests = [trainer.trial(config) for _ in range(4)]
     wins = sum(t['x'] and not t['y'] for t in tests)
     return {'wins': wins, 'x': sum(t['x'] for t in tests), 'y': sum(t['y'] for t in tests),
             'active': sum(t['active'] for t in tests) / 4}
 
 
+
+MAPPINGS = {'straight': {'a': 'x', 'b': 'y'}, 'crossed': {'a': 'y', 'b': 'x'}}
+
+
+def mapping_schedule(mapping: str) -> list:
+    """One condition per input: reward its target output, punish the other."""
+    return [(i, {o: (+1.0 if o == target else -1.0) for o in ('x', 'y')}) for i, target in MAPPINGS[mapping].items()]
+
+
+def score_mapping(seed: int, mapping: str, rule: Rule, trials: int = 300, rewarded: bool = True, sheet: dict | None = None) -> dict:
+    """Train a two-input sheet on a mapping (alternating a and b trials), then test each input alone."""
+    m = Sheet(seed=seed, two_inputs=True, **(sheet or {}))
+    state, at, plastic = m.build()
+    config = broadcast_config()
+    schedule = mapping_schedule(mapping) if rewarded else [(i, {'x': 0.0, 'y': 0.0}) for i in ('a', 'b')]
+    trainer = Trainer(state, at, plastic, rule, jitter=m.jitter, seed=seed, schedule=schedule)
+    for _ in range(trials):
+        trainer.trial(config)
+    result = {}
+    for i, target in MAPPINGS[mapping].items():
+        other = 'y' if target == 'x' else 'x'
+        trainer.test_mode(i)
+        tests = [trainer.trial(config) for _ in range(2)]
+        result[i] = ''.join(o for o in ('x', 'y') if tests[-1][o]) or '-'
+        result[i + '_ok'] = all(t[target] and not t[other] for t in tests)
+    result['ok'] = result['a_ok'] and result['b_ok']
+    return result
+
 # The live demo: a full sheet held near the edge of firing, with per-trial exploration and reward prediction error.
 DEMO_RULE = Rule(rate=0.1, elig_time=2.0, start=0.4, explore=0.1, rpe=0.1)
 DEMO_SHEET = dict(spread=0.15, entry=6)
+
+
+def demo(seed: int, mapping: str | None = None) -> Trainer:
+    """The live demo's trainer: R1 on a one-input sheet, or a two-input sheet trained on a mapping."""
+    m = Sheet(seed=seed, two_inputs=mapping is not None, **DEMO_SHEET)
+    state, at, plastic = m.build()
+    schedule = mapping_schedule(mapping) if mapping else None
+    return Trainer(state, at, plastic, dataclasses.replace(DEMO_RULE), jitter=m.jitter, seed=seed, schedule=schedule)
 
 
 if __name__ == '__main__':

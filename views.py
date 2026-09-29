@@ -85,7 +85,7 @@ class CellsPanel:
                 ),
             )
 
-        if self.focus:
+        if self.focus and pygame.key.get_focused():     # only while the window has keyboard focus
             pygame.draw.rect(
                 self.screen,
                 (255, 255, 255),
@@ -150,7 +150,7 @@ class ChartPanel:
                 pygame.draw.lines(self.screen, ENERGY_COLOUR, False, probe["energy_chart"], 1)
                 pygame.draw.lines(self.screen, FLAME_COLOUR, False, probe["flame_chart"], 1)
 
-        if self.focus:
+        if self.focus and pygame.key.get_focused():     # only while the window has keyboard focus
             pygame.draw.rect(
                 self.screen,
                 (255, 255, 255),
@@ -285,7 +285,7 @@ class ConsolePanel:
             (self.xy[0] + self.size[0] - 70, self.xy[1]),
         )
 
-        if self.focus:
+        if self.focus and pygame.key.get_focused():     # only while the window has keyboard focus
             pygame.draw.rect(
                 self.screen,
                 (255, 255, 255),

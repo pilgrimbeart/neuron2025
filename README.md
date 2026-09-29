@@ -2,31 +2,32 @@
 
 `neuron2025` is an interactive Python sandbox for building and probing a 2D field of excitable cells. You "wire" the medium by enabling cells on a grid, inject energy into those cells continuously, and then strike individual locations to watch pulses ignite, propagate, sustain, die out, and interact.
 
-The aim is **emergent learning**: a medium whose own local dynamics, given some reward signal, reshape it so that useful pulse pathways form and persist. Everything so far is groundwork for that. The cell model is deliberately tiny (all of it is in `physics.py`), and the bundled patterns (`line`, `oneway`, `and`, `or`, `xor`, `cross`, `osc`, `inhibit`) show that one shared parameter set, derived from first principles, already supports propagation, one-way gates, logic, crossings, oscillators and inhibition.
+The aim is **emergent learning**: a medium whose own local dynamics, given some reward signal, reshape it so that useful pulse pathways form and persist, with local rules only (no global signal, no outside hand beyond the training inputs and outputs). The cell model is deliberately tiny (all of it is in `physics.py`). The bundled patterns (`line`, `oneway`, `and`, `or`, `xor`, `cross`, `osc`, `inhibit`) show that one shared parameter set, derived from first principles, supports propagation, one-way gates, logic, crossings, oscillators and inhibition; `twophase.py` shows a random sheet learning, by reward alone, which of two inputs should drive an output.
 
 ## What The Simulator Models
 
-Each cell of the grid is empty, **normal**, or a **transducer**. A cell has:
+Each cell of the grid is empty, **normal**, or a **teacher**. A cell has:
 
 - an energy store that replenishes over time,
 - a flame value representing how strongly it is currently burning,
-- a weight: how readily it responds to light (1 = normal). This is the slow value that learning changes.
+- a weight: how readily it responds to light (1 = normal). This is what learning changes,
+- a fire trace: 1 when it ignites, then fading. Its neighbours can read it, so it tells them how long ago the cell fired (no clock: two traces fade at the same rate, so comparing them says only which fired first, and by how much),
+- attention: whether it is currently being credited as a cause of something the teacher valued, and passing that back,
+- heat: how much more readily than usual it fires by chance while learning (its temperature above a base).
 
-It also receives two kinds of light from other cells' flames nearby, through the same Gaussian coupling:
-
-- **illumination**, from normal cells, which can ignite it,
-- the **teaching signal** (`modulator`), from transducer cells, which never ignites anything. A transducer burns exactly like a normal cell when lit, but gives off teaching signal instead of light, so a pulse arriving at a transducer turns into a local burst of teaching signal and goes no further.
+It receives **illumination** from other normal cells' flames nearby, through a Gaussian coupling. A **teacher** cell gives no light and is never lit; it only burns when struck, and striking it pays attention to whatever just fired beside it. Outside the cells there are only strikes (inputs, and the teacher) and one input, `teaching`, which switches learning on.
 
 On each simulation step (this is the whole of `physics.py`):
 
-1. illumination and teaching signal are computed from other cells' flames nearby (a cell's own flame doesn't count),
-2. dark cells with at least `STRIKE_LEVEL` energy ignite if weight × illumination crosses a strike threshold,
+1. illumination is computed from other normal cells' flames nearby (a cell's own flame doesn't count),
+2. dark cells with at least `STRIKE_LEVEL` energy ignite if weight × illumination crosses a strike threshold; while teaching, they may also ignite by chance, more readily the nearer they are to that threshold and the hotter they are,
 3. weak flames extinguish,
 4. burning cells relax toward the energy available to them,
 5. flames consume energy, and a flame whose fuel runs out goes out,
 6. enabled cells refill with fresh energy,
-7. each cell keeps a fading memory (trace) of the brightest recent light and teaching signal it received,
-8. learning: under a recent teaching signal, a cell that recently received light strengthens, and a cell at rest in the dark weakens (see "Learning" below).
+7. a cell that ignited sets its fire trace to 1; all traces fade,
+8. attention passes one hop back, from effects to causes, by comparing fire traces (see "Learning" below),
+9. while teaching: cells credited as causes strengthen, cells that fired just after a credited neighbour without causing anything (backflow) weaken, every firing costs a little, and near misses that go unrewarded warm up.
 
 Manual strikes follow the same fuel rule: a cell needs at least `STRIKE_LEVEL` energy to be struck.
 
@@ -62,6 +63,12 @@ python neuron.py 1
 
 On startup the program tries to load `patterns/recent.json`, and on exit it saves the current session back to that file.
 
+To run console commands at startup (after that load), pass them with `-c`, as many as you like:
+
+```bash
+python neuron.py -c "twophase 3" -c "speed 20"
+```
+
 ## Code Layout
 
 The simulator is now split into a small set of modules rather than one large file:
@@ -77,6 +84,7 @@ The simulator is now split into a small set of modules rather than one large fil
 - `headless.py`: load and run patterns without pygame, for scripted experiments and the regression suite
 - `gates.py`: generates every bundled pattern's layout from code (`python gates.py` rewrites them)
 - `verify.py`: the regression suite (`python verify.py`)
+- `twophase.py`: the learning experiment: a random sheet taught by reward alone (`python twophase.py`, or `twophase SEED` in the app)
 - `patterns/`: saved simulator snapshots and bundled example layouts
 - `LESSONS.md`: alternatives we considered and why we settled where we did, in brief, so settled questions aren't reopened
 
@@ -90,10 +98,10 @@ The window has three regions:
 
 The grid view can show the combined state or isolate one field:
 
-- default view: red = energy, green = flame (×2), blue = teaching signal received. An enabled cell at rest is bright red and an empty one black; a cell just ignited looks yellow and turns green as its energy drains; a recovering cell glows dim red. Cells never drop below 10% grey, and transducers always carry an extra 40% blue,
+- default view: red = energy, green = flame (×2), blue = attended (attention passing back through it). An enabled cell at rest is bright red and an empty one black; a cell just ignited looks yellow and turns green as its energy drains; a recovering cell glows dim red. Cells never drop below 10% grey, and teacher cells always carry an extra 40% blue,
 - `e`: energy only, grayscale,
 - `i`: illumination (light from other cells) only, grayscale, with the ignition threshold at mid-grey,
-- `w`: weight in blue: neutral (1.0) is half blue, the maximum (2.0) full blue. This is where learning shows. When a training experiment gives each cell a temperature (`twophase`), it shows in green (the experiment's maximum = full green).
+- `w`: weight in blue: neutral (1.0) is half blue, the maximum (2.0) full blue. This is where learning shows. While `twophase` runs, each cell's temperature shows in green (`T_MAX` = full green).
 
 Chart traces use the same colours: energy red, flame green, illumination white.
 
@@ -103,7 +111,7 @@ Chart traces use the same colours: energy red, flame green, illumination white.
 
 - Left click on a cell: toggle it between empty and normal. A new cell starts with full energy and neutral weight.
 - Left-drag: paint more cells with the same enabled/disabled state.
-- Ctrl+click on a cell: toggle it between a transducer and empty (`transducer X Y` / `disable X Y`).
+- Ctrl+click on a cell: toggle it between a teacher and empty (`teacher X Y` / `disable X Y`).
 - Right click on a cell: strike it if it has enough energy, and trigger the chart timebase.
 - Click a panel: move keyboard focus between grid, chart, and console.
 
@@ -122,7 +130,7 @@ Chart traces use the same colours: energy red, flame green, illumination white.
 - `c`: clear the enabled pattern and zero activity (`clear`).
 - `f`: fill the whole grid with enabled cells (`fill`).
 - `z`: reset activity without changing the enabled pattern — flame off, energy full wherever enabled (`settle`). Useful before a trial so no residual activity (e.g. from a loaded snapshot) leaks in. Weights are left alone.
-- `Shift+Z`: forget all learning, resetting every weight to 1.0 (`unlearn`).
+- `Shift+Z`: forget all learning, resetting every weight to 1.0 and all heat to 0 (`unlearn`).
 - `r`: randomly strike roughly one tenth of the cells.
 - `a`: add a chart probe at the cell under the mouse (`probe X Y`).
 - `d`: delete a chart probe at the cell under the mouse (`deleteprobe X Y`).
@@ -160,17 +168,20 @@ pause                Pause the simulation
 resume               Resume the simulation
 stats                Print grid-wide activity summary
 probes               Print each probe's live energy/flame/illumination
-inspect X Y          Print one cell's kind, energy, flame, weight, illumination and teaching signal
+inspect X Y          Print one cell's kind, energy, flame, weight, illumination, trace, attention and heat
 params               Print the current parameter values
 clear                Clear the enabled pattern and zero activity
 fill                 Enable every cell
 enable X Y           Make a normal cell
-transducer X Y       Make a transducer cell: burns like a normal cell, but emits teaching signal instead of light
+teacher X Y          Make a teacher cell: gives no light and is never lit; striking it pays attention to what just fired beside it
 disable X Y          Remove a cell
 settle               Flame off, energy full where enabled
-unlearn              Reset every cell's weight to 1.0 (forget all learning)
+unlearn              Reset every cell's weight to 1.0 and its heat to 0 (forget all learning)
 probe X Y            Add a chart probe
 deleteprobe X Y      Delete the chart probe at a cell
+twophase SEED        Run the learning experiment live: adaptation grows routes, then reward teaches a, then b
+twophase stop        Stop the learning experiment
+speed N              Run N simulation steps per frame (1..50)
 grid SIZE            Resize the grid to SIZE x SIZE, keeping the pattern centred
 shift DX DY          Shift the whole pattern and its probes
 undo                 Undo the last change
@@ -211,13 +222,11 @@ The bundled patterns are generated by `gates.py`, all use the shared parameters,
 - `patterns/cross.json` (48×48): a crossing — a pulse from `a` (left edge) leaves only at `a_out` (right edge), and a pulse from `b` (top edge) leaves only at `b_out` (bottom edge). Simultaneous pulses leave at both; otherwise keep them ≈ 10 s apart. See "Crossing Two Pulse Streams" below.
 - `patterns/osc.json`: a ring oscillator — strike `start` once and a pulse circulates forever, emitting at `out` about every 10 s. The ring contains a diode so the pulse can only go one way, and is long enough (60 cells) that it always returns to recovered cells. `start` joins just after the diode, so the half of the launch pulse that heads backwards dies at once.
 - `patterns/inhibit.json`: an inhibitor — a pulse at `in` reaches `out` unless a pulse arrives at `inh` at the same time. `inh` is a modulation input: on its own it never produces output, and never leaves through `in`. It is one inhibit unit from XOR, with `inh` as the veto.
-- `patterns/learn1.json`: learns to pass `a`. Before training a pulse at `a` stops short of junction `j`; strike `a` and `l` together a few times and `a` alone then reaches `o`. Strike `l` alone a few times to untrain it.
-- `patterns/learn2.json` (33×33): learns *which* input to pass. Strike `a` and `l` together a few times and `a` passes while `b` doesn't; then strike `b` and `l` together and it switches. `l` alone never reaches `o`.
 - `patterns/recent.json`: the most recently saved working state. This file is intentionally ignored by git.
 
 Each save stores:
 
-- each cell's kind (empty, normal or transducer),
+- each cell's kind (empty, normal or teacher),
 - current energy, flame and weight values,
 - any chart probes,
 - the current global parameter values.
@@ -341,35 +350,30 @@ Routing each input across the relay to its output makes the dead time about 3 s 
 
 ### Learning
 
-The rule (step 8 of `physics.py`) uses two fading traces per cell: `L`, the brightest recent illumination, and `T`, the brightest recent teaching signal. Each follows its signal up at once and otherwise fades with time constant `TRACE_TIME` (2 s).
+Learning is reward only: the network acts by itself, and a teacher can only say "yes, that" after the output has fired. It never makes anything fire. Everything it sets off happens cell to cell (steps 2 and 7–9 of `physics.py`):
 
-```
-every cell strengthens at   LEARN_RATE   * T * L      credit for light received, whether it then fired or not
-a cell at rest weakens at   UNLEARN_RATE * T * T      teaching signal in the dark (at rest = dark, full energy)
-weight kept within WEIGHT_MIN..WEIGHT_MAX
-```
+- **Attention runs back from the reward to its causes.** Striking the teacher cell beside the output makes it attended. An attended cell reads its neighbours' fire traces, finds the one that fired first before it (two cells out if no adjacent one did, as light reaches that far), and offers a level; a neighbour that fired, listening to the attended neighbour that fired soonest after it (the one it could have caused), accepts if its own trace is at or below that level. So attention travels back one hop per step along the route the pulse actually took, even through a flood, and a cell that fired after its neighbour (backflow) is never taken for a cause. After passing attention on, a cell is refractory for a while, so one reward sends one wave.
+- **Credit and blame.** A cell that accepts attention gains weight. A cell that fired a moment after a credited neighbour and wasn't accepted is backflow: the valued route drove it, but it led nowhere; it loses a little weight. That closes a competing input's route exactly where it joins the rewarded one. Every firing costs a little, so unused activity fades.
+- **Exploration.** While teaching, a cell can fire by chance, far more readily when it is nearly lit enough. Each cell has its own temperature: it warms when it nearly took part (lit, but didn't fire) and no attention came within reach, cools when attention does, and slowly settles back. So chance firing concentrates at the edge of activity that isn't paying off, such as a closed gate beside a stopped pulse.
+- **Teaching on or off.** The `teaching` input switches chance firing and all learning on. With it off the network is deterministic and nothing changes.
 
-- Light and teaching signal count as together if they fall within a couple of seconds of each other, in either order: the teacher can come up to about 0.5 s before the input or 1.5 s after it at every gain from −20% to +20% (about −1.5 s to +2 s at nominal gain). So a reward can anticipate the action or follow it.
-- Strengthening credits every cell that received light, including ones that fired: a reward after an action reaches the cells that took it. Weakening applies only to cells at rest, which keeps it on idle junctions and spares the teacher's own line (refractory while its teaching signal lingers).
-- Both terms scale alike with coupling gain, so the balance point (`UNLEARN_RATE / LEARN_RATE` = 1.5) doesn't move with it.
-- Only transducers emit teaching signal, so nothing learns anywhere else: every other pattern is unaffected.
-
-The learning junction (`learn1`, and each half of `learn2`): the input line ends diagonally beside a junction cell, giving it about 0.7× the ignition threshold, so an untrained input stops there. The teacher `l` ends in a transducer two cells from the junction. It has to be that far: light and teaching signal share a reach, so a transducer close enough to teach the junction is lit by it just as strongly, and a closer one gets ignited by the junction's own firing and re-teaches whatever just happened. Pulsing the input with `l` lights the junction while the teaching signal is on it, so its weight rises until the input alone can ignite it. In `learn2`, the idle junction sits in the teaching signal with no light, so it weakens: that's the competition. Use `w` to watch the weights.
-
-The training protocols are in `learn.py`; `verify.py` runs them with the same margins as the gates (learn within 8 pairings at every gain from −20% to +20%, switch, retain through use, never pass from `l` alone), with the teacher simultaneous, 0.5 s early and 1 s late. What was tried and why this rule won is in `LESSONS.md`.
+`twophase.py` is the test: a random sheet with inputs `a` and `b` and output `o`. Adaptation (both inputs rewarded for reaching `o`) grows routes; then teaching `a` alone makes `a` pass and `b` not, and teaching `b` switches it. On 16 random sheets, with every rule local: routes grow on all 16, teaching `a` blocks `b` on 15, and the full test (learn `a`, then switch to `b`, each checked with teaching off) passes on 14. How we got here, including what failed, is in `LESSONS.md`.
 
 ### Regression Suite
 
 **Run `python verify.py` every time `physics.py`, the shared parameters, or any pattern changes, and make it pass before committing.**
 
 ```bash
-python verify.py            # every pattern
+python verify.py            # every pattern, and learning
 python verify.py xor cross  # just these
+python verify.py learning   # just learning
 ```
 
 It never waits for real time: the model always advances by an explicit time step, so the suite steps at a fixed frame rate as fast as the CPU allows (a few hundred times real time per core) and spreads the runs across all cores.
 
-For each pattern, in order starting with `line`, `verify.py` checks that the saved file uses `physics.DEFAULT_PARAMS` and matches its layout and probes in `gates.py`. It then runs every truth-table case headlessly at the nominal parameters, with `COUPLING_GAIN` changed by −20% and +20%, and at 30 and 100 fps. Every expected output must fire the right number of times, every cell must ignite at most once per pulse, and nothing may still be burning at the end, except for `osc`, which must keep running. It prints PASS/FAIL per pattern and exits non-zero on any failure; it takes a few seconds.
+For each pattern, in order starting with `line`, `verify.py` checks that the saved file uses `physics.DEFAULT_PARAMS` and matches its layout and probes in `gates.py`. It then runs every truth-table case headlessly at the nominal parameters, with `COUPLING_GAIN` changed by −20% and +20%, and at 30 and 100 fps. Every expected output must fire the right number of times, every cell must ignite at most once per pulse, and nothing may still be burning at the end, except for `osc`, which must keep running. It prints PASS/FAIL per pattern and exits non-zero on any failure.
+
+Learning is checked with `twophase.py`: on 8 fixed random sheets, at least 6 must grow routes, learn `a` (then `a` reaches `o` and `b` doesn't, with teaching off) and switch to `b`. That takes a few minutes and dominates the run; the pattern checks take seconds.
 
 To add or change a pattern, edit its function in `gates.py`, add its cases to `verify.CASES`, run `python gates.py NAME`, run `python verify.py`, and then check it live through the control channel.
 
@@ -382,4 +386,4 @@ Two complementary ways to work with the simulator programmatically:
 
 ## Project Status
 
-A compact simulator, a set of verified patterns on one shared parameter set, and a regression suite. The next step is emergent learning. There is no packaging or formal file format spec; the module files in the project root are the reference implementation.
+A compact simulator, a set of verified patterns on one shared parameter set, a regression suite, and a first result in emergent learning with local rules only (`twophase.py`, "Learning" above). There is no packaging or formal file format spec; the module files in the project root are the reference implementation.

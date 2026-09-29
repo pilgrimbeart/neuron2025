@@ -145,30 +145,6 @@ def cross():
     return c, {'a': (0, cx), 'b': (cx, 0), 'both': (jx, jy), 'a_out': (n - 1, join), 'b_out': (join, n - 1)}, n
 
 
-
-# --- learning circuits (see learn.py for the training protocols) ------------------------------------------
-
-def learn1():
-    """Learns to pass a: a's line ends diagonally beside junction j (16,16), so a alone falls short of igniting
-    it until trained. l ends in a transducer two cells below j: close enough to teach j, far enough that j's own
-    light can't ignite it. Pulse a and l together a few times and a alone then reaches o."""
-    cells = hline(15, 2, 15) | hline(16, 16, 29) | vline(16, 19, 31)
-    return cells, {'a': (2, 15), 'l': (16, 31), 'j': (16, 16), 'o': (29, 16)}, 32, {(16, 18)}
-
-
-def learn2():
-    """Learns which of a and b to pass: two learn1-style junctions sharing one l and one output. Pulsing l with
-    a teaches a's junction and, because b's junction sits dark in the teaching signal, un-teaches b's; and vice
-    versa. Each junction's output goes up through a diode into an OR relay and out at the top edge. The paths
-    from a, b and l to their junction or transducer are all 18 cells long, so pulses struck together coincide."""
-    half = hline(21, 0, 6) | vline(6, 15, 21) | hline(15, 6, 12)              # a's line, ending at (12,15)
-    half |= vline(13, 8, 13) | {(13, 14)}                                     # junction ja (13,14) and its output
-    half |= diode((13, 6), (0, -1)) | vline(13, 4, 6) | hline(4, 13, 16)      # diode up into the relay
-    half |= {(15, 15)}                                                        # l's branch to its transducer
-    cells = half | mirror_x(half, 33) | vline(16, 15, 31) | vline(16, 0, 4)
-    probes = {'a': (0, 21), 'b': (32, 21), 'l': (16, 31), 'o': (16, 0), 'ja': (13, 14), 'jb': (19, 14)}
-    return cells, probes, 33, {(15, 14), (17, 14)}
-
 PATTERNS = {
     'line': line,
     'oneway': oneway,
@@ -178,19 +154,17 @@ PATTERNS = {
     'cross': cross,
     'osc': osc,
     'inhibit': inhibit,
-    'learn1': learn1,
-    'learn2': learn2,
 }
 
 
 def build_state(name: str) -> tuple[State, list[dict]]:
     cells, probes, size, *rest = PATTERNS[name]()
-    transducers = rest[0] if rest else set()
+    teachers = rest[0] if rest else set()
     state = State((size, size))
     for xy in cells:
         state.set_kind(xy, physics.NORMAL)
-    for xy in transducers:
-        state.set_kind(xy, physics.TRANSDUCER)
+    for xy in teachers:
+        state.set_kind(xy, physics.TEACHER)
     return state, [{'xy': xy, 'label': label} for label, xy in probes.items()]
 
 

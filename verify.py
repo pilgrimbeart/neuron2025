@@ -6,8 +6,11 @@
 For each pattern, the saved file must use physics.DEFAULT_PARAMS and match its layout in gates.py, and
 every case below must hold at the nominal parameters, with COUPLING_GAIN changed by -20% and +20%,
 and at 30 and 100 frames per second. Unless a pattern is expected to keep running, every pulse must
-also burn each cell at most once and die out completely. Learning patterns must also pass their
-training protocol in learn.py under the same variations.
+also burn each cell at most once and die out completely.
+
+Learning (python verify.py learning, and part of the full run) is checked with twophase.py: on LEARNING_SEEDS
+random sheets, at nominal parameters, at least LEARNING_PASS must learn a, then switch to b. This takes a few
+minutes; it runs first, alongside the pattern checks.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from multiprocessing import Pool
 import numpy as np
 
 import gates
-import learn
+import twophase
 import physics
 from headless import load_pattern, simulate
 from model import SimulationConfig
@@ -33,14 +36,12 @@ CASES = {
     'cross': [(['a'], {'a_out': 1, 'b_out': 0, 'b': 0}), (['b'], {'b_out': 1, 'a_out': 0, 'a': 0}), (['a', 'b'], {'a_out': 1, 'b_out': 1})],
     'inhibit': [(['in'], {'out': 1, 'inh': 0}), (['inh'], {'out': 0, 'in': 0}), (['in', 'inh'], {'out': 0})],
     'osc': [(['start'], {'out': (3, None)})],     # (min, max): keeps pulsing
-    'learn1': [(['a'], {'o': 0}), (['l'], {'o': 0})],                   # untrained
-    'learn2': [(['a'], {'o': 0}), (['b'], {'o': 0}), (['l'], {'o': 0})],
 }
-# training protocol and the teacher offsets (seconds after the input; negative = before) to train with
-TRAINING = {'learn1': (learn.train_learn1, [None]), 'learn2': (learn.train_learn2, [0.0, -0.5, 1.0])}
 KEEPS_RUNNING = {'osc'}
 SECONDS = {'cross': 40, 'osc': 60}
 VARIANTS = [(1.0, 50), (0.8, 50), (1.2, 50), (1.0, 30), (1.0, 100)]    # (gain factor, frames per second)
+LEARNING_SEEDS = range(8)
+LEARNING_PASS = 6
 
 
 def check_file(name: str) -> list[str]:
@@ -83,31 +84,34 @@ def run_case(job) -> tuple[str, str | None]:
     return name, None
 
 
-def run_training(job) -> tuple[str, str | None]:
-    name, offset, gain, fps = job
-    protocol, _ = TRAINING[name]
-    result = protocol(gain=gain, fps=fps) if offset is None else protocol(gain=gain, fps=fps, offset=offset)
-    where = f"training{'' if offset is None else f', teacher {offset:+g}s'}, gain x{gain:g}, {fps} fps"
-    return name, None if result['ok'] else f'{where}: {result}'
-
-
 def main(names: list[str]) -> int:
+    learning = 'learning' in names
+    names = [n for n in names if n != 'learning']
     failures = {name: check_file(name) for name in names}
     jobs = [(name, strikes, expect, gain, fps) for name in names for strikes, expect in CASES[name] for gain, fps in VARIANTS]
-    training = [(name, offset, gain, fps) for name in names if name in TRAINING
-                for offset in TRAINING[name][1] for gain, fps in VARIANTS]
     with Pool() as pool:
-        slow = pool.imap_unordered(run_training, training)          # start the long training runs first
-        for name, problem in list(pool.imap_unordered(run_case, jobs)) + list(slow):
+        learned = pool.map_async(twophase.score, LEARNING_SEEDS if learning else [])     # the slow part: start it first
+        for name, problem in pool.imap_unordered(run_case, jobs):
             if problem:
                 failures[name].append(problem)
+        results = learned.get()
     for name in names:
-        runs = (len(CASES[name]) + len(TRAINING.get(name, (None, []))[1])) * len(VARIANTS)
+        runs = len(CASES[name]) * len(VARIANTS)
         print(f"{'PASS' if not failures[name] else 'FAIL'}  {name:8} ({runs} runs)")
         for problem in failures[name]:
             print(f'      {problem}')
-    return 1 if any(failures.values()) else 0
+    ok = not any(failures.values())
+    if learning:
+        passed = [r['seed'] for r in results if r['ok']]
+        good = len(passed) >= LEARNING_PASS
+        ok &= good
+        print(f"{'PASS' if good else 'FAIL'}  learning ({len(passed)}/{len(results)} sheets learned a, then switched to b; "
+              f"need {LEARNING_PASS})")
+        for r in results:
+            if not r['ok']:
+                print(f"      sheet {r['seed']}: after a {r['after_a']}, after b {r['after_b']}")
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1:] or list(gates.PATTERNS)))
+    sys.exit(main(sys.argv[1:] or list(gates.PATTERNS) + ['learning']))

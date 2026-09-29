@@ -2,6 +2,8 @@
 
 Alternatives we considered and why we settled where we did, so we don't re-litigate them.
 
+The code for the earlier experiments (`learn.py` with the `learn1`/`learn2` patterns, `broadcast.py`, `attention.py`) was removed when learning moved into `physics.py`; it is in the git history.
+
 ## One dynamic variable per cell is possible, but only as a phase
 
 - A single *level* per cell (like energy or flame alone) can't make a pulse: with no input it just drifts to rest, so it can't rise, fall, and then be refractory. That's why the current model needs two (flame fires, energy recovers).
@@ -116,3 +118,14 @@ Doing a good job = my activity is followed by attention coming back to me: atten
 - **A cell must listen only to the attended neighbour that fired soonest after it** (the one it could have caused). Taking the most permissive level from any attended neighbour let backflow cells at the join in on the say-so of cells further down the route that fired after them: they were credited instead of blamed, and a no longer blocked b (11/16).
 - **Result: 12/16, against 13/16 for attention traced back by the experiment code** (one sheet differs: teaching a didn't block b). The local version often accepts a few more cells beside the route (up to 31 against 17).
 - Still not local in time: weight changes and blame are applied at the end of the trial, and "never accepted" is judged then.
+
+## Purely local: the learning rule in physics.py
+
+Everything the cells do is now in `physics.py`; outside the cells there are only strikes (the inputs, and a teacher cell beside the output, struck when the output responds), and a `teaching` input that switches learning on. No resets: the grid runs continuously, one input pulse every 12 s.
+
+- **The teacher is a cell.** It gives no light and is never lit, so it can't be set off by the output (that would reward everything). When struck it is attended, and it accepts *every* neighbour that fired before it, not just the earliest: nothing lit it, and its "causes" are what it saw. With the ordinary rule it passed over the output itself, and the output was then blamed as a leak on every reward until it stopped firing.
+- **Attention needs refractoriness, like a flame.** With attention simply lasting a second, cells could be accepted again after it lapsed, and chance firing kept re-igniting attended cells, so attention circulated through the flood for the whole trial, re-crediting hundreds of cells (average weight 0.5 → 1.9 in 20 trials). After passing attention on, a cell is now refractory for 8 s: one teacher strike, one wave.
+- **Base temperature near zero (0.01).** At 0.05 (fine when adaptation ran without chance firing) chance firing kept the flood alive and got credited: after adaptation both inputs lit 55–75% of the sheet, the same cells, so there was no join to gate. At 0.01 only heated near misses fire by chance, and the flood recedes to 12–19%.
+- **A leak is any cell that fired beside the credited route without being accepted, including the flanks.** Restricting blame to cells that fired at least 0.1 s after their credited neighbour (backflow only, to spare flanks during adaptation) stopped teaching a from blocking b on almost every sheet: blocking relies on blaming the cells alongside the route at the join. With the flood kept small by the low base temperature, flank blame no longer kills adaptation.
+- **The teacher's response window must allow for slow early floods:** at the starting weights o fires 6.0–6.7 s after the input on some sheets; with a 1–6 s window they were never rewarded and died. 1–9 s.
+- **Faster heating (0.02 per second of unrewarded near miss, from 0.01) rescued most of the sheets where b never got through.** Stronger blame (0.1) instead broke adaptation. Result, all local: routes grow on 16/16 sheets, teaching a blocks b on 15/16, the full test passes on 14/16 (the version with attention traced back by experiment code: 13/16).

@@ -47,7 +47,8 @@ def load_snapshot(filename: str) -> tuple[State, list[dict], dict[str, float]]:
 
     state = State((len(obj["kind"]), len(obj["kind"][0])))
     for name in State.SAVED:
-        setattr(state, f"{name}_array", np.array(obj[name], dtype=np.int8 if name == "kind" else float))
+        if name in obj:             # anything missing (e.g. from an older file) stays at its blank value
+            setattr(state, f"{name}_array", np.array(obj[name], dtype=np.int8 if name == "kind" else float))
 
     probes = obj.get("probes", [])
     for probe in probes:

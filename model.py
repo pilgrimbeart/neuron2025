@@ -30,12 +30,14 @@ class State:
     """The grid of cells, plus editing operations. The cell behaviour itself is in physics.py."""
 
     # Per-cell arrays and the value an empty or newly exposed cell holds.
-    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "light_trace": 0.0, "teach_trace": 0.0,
-              "illumination": 0.0, "modulator": 0.0}
-    SAVED = ("kind", "energy", "flame", "weight", "light_trace", "teach_trace")
+    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "trace": 0.0, "attention": 0.0,
+              "suspicion": 0.0, "heat": 0.0, "illumination": 0.0}
+    SAVED = ("kind", "energy", "flame", "weight", "trace", "attention", "suspicion", "heat")
 
-    def __init__(self, grid_size: tuple[int, int]):
+    def __init__(self, grid_size: tuple[int, int], seed: int = 0):
         self.grid_size = grid_size
+        self.teaching = 0.0                          # input: 1 switches learning on (physics.step)
+        self.rng = np.random.default_rng(seed)       # chance firing while teaching (seeded, so runs repeat)
         self.kind_array = np.zeros(grid_size, dtype=np.int8)
         for name, blank in self.ARRAYS.items():
             if name != "kind":
@@ -50,29 +52,38 @@ class State:
         self.energy_array[xy] = 1.0 if kind != physics.EMPTY else 0.0
         self.flame_array[xy] = 0.0
         self.weight_array[xy] = 1.0
+        self.heat_array[xy] = 0.0
 
     def set_all_kinds(self, kind: int) -> None:
         self.kind_array[:] = kind
         self.weight_array[:] = 1.0
+        self.heat_array[:] = 0.0
 
     def reset_weights(self) -> None:
+        """Forget all learning: neutral weights, no heat."""
         self.weight_array[:] = 1.0
+        self.heat_array[:] = 0.0
 
     def reset_energy_and_flame(self) -> None:
         """Flame off, energy full wherever there is a cell."""
         self.energy_array[:] = np.where(self.kind_array != physics.EMPTY, 1.0, 0.0)
-        for name in ("flame", "light_trace", "teach_trace", "illumination", "modulator"):
+        for name in ("flame", "trace", "attention", "suspicion", "illumination"):
             getattr(self, f"{name}_array")[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
-        new = physics.step({name: getattr(self, f"{name}_array") for name in self.SAVED}, config.vars, delta_s)
+        new = physics.step({name: getattr(self, f"{name}_array") for name in self.SAVED}, config.vars, delta_s,
+                           self.teaching, self.rng)
         for name, value in new.items():
             setattr(self, f"{name}_array", value)
 
     def strike(self, xy: tuple[int, int], config: SimulationConfig) -> bool:
-        if not physics.can_ignite(self.kind_array[xy], self.energy_array[xy], config.vars):
+        """Ignite a cell from outside. A struck teacher pays attention to whatever just happened beside it."""
+        if not physics.strike(self.kind_array[xy], self.energy_array[xy], config.vars):
             return False
         self.flame_array[xy] = config.get("STRIKE_LEVEL")
+        self.trace_array[xy] = 1.0
+        if self.kind_array[xy] == physics.TEACHER:
+            self.attention_array[xy] = config.get("ATTENTION_TIME") + config.get("ATTENTION_REST")
         return True
 
     def shift(self, dx: int, dy: int) -> None:

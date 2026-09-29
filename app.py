@@ -19,7 +19,7 @@ from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
 
 
-KIND_NAMES = {physics.EMPTY: "empty", physics.NORMAL: "normal", physics.TRANSDUCER: "transducer"}
+KIND_NAMES = {physics.EMPTY: "empty", physics.NORMAL: "normal", physics.TEACHER: "teacher"}
 
 CONTROL_IN_PATH = Path("control_in.txt")
 CONTROL_OUT_PATH = Path("control_out.log")
@@ -220,7 +220,7 @@ class SimulatorApp:
     def unlearn(self) -> None:
         self.push_undo_state()
         self.state.reset_weights()
-        print("Unlearned: every weight reset to 1.0")
+        print("Unlearned: every weight reset to 1.0, all heat cleared")
 
     def console_grid(self, size_str: str) -> None:
         try:
@@ -476,7 +476,8 @@ class SimulatorApp:
             return
         s = self.state
         print(f"{xy} kind={KIND_NAMES[int(s.kind_array[xy])]} energy={s.energy_array[xy]:.4f} flame={s.flame_array[xy]:.4f} "
-              f"weight={s.weight_array[xy]:.4f} illumination={s.illumination_array[xy]:.4f} modulator={s.modulator_array[xy]:.4f}")
+              f"weight={s.weight_array[xy]:.4f} illumination={s.illumination_array[xy]:.4f} trace={s.trace_array[xy]:.3f} "
+              f"attention={s.attention_array[xy]:.2f} heat={s.heat_array[xy]:.3f}")
 
     def print_commands(self) -> None:
         print("Console commands:")
@@ -519,8 +520,8 @@ class SimulatorApp:
             return
 
         if event.button == 1 and pygame.key.get_mods() & pygame.KMOD_CTRL:
-            is_transducer = self.state.kind_array[cell_xy] == physics.TRANSDUCER
-            self.submit(f"{'disable' if is_transducer else 'transducer'} {cell_xy[0]} {cell_xy[1]}")
+            is_teacher = self.state.kind_array[cell_xy] == physics.TEACHER
+            self.submit(f"{'disable' if is_teacher else 'teacher'} {cell_xy[0]} {cell_xy[1]}")
             self.dragging_state = None
         elif event.button == 1:
             self.push_undo_state()
@@ -587,7 +588,7 @@ class SimulatorApp:
     def update(self, delta_s: float) -> None:
         if self.trainer is not None and self.trainer.state is not self.state:
             self.trainer = None
-            print("Broadcast training stopped (the grid was replaced)")
+            print("Training stopped (the grid was replaced)")
         if (not self.paused) or self.do_step:
             for _ in range(self.speed):
                 if self.trainer is None:
@@ -607,78 +608,28 @@ class SimulatorApp:
             + (f", attended {summary['attended']} cells" if 'attended' in summary else ""))
         print(f"trial {self.trainer.trials}: {text}, weights {w.min():.2f}..{w.max():.2f} (mean {w.mean():.2f})")
 
-    def console_broadcast(self, arg: str, mapping: str | None = None) -> None:
-        import broadcast
+    def console_twophase(self, arg: str) -> None:
+        import twophase
         if arg == "stop":
             self.trainer = None
             print("Training stopped")
             return
-        if (seed := self.parse_training(arg, mapping)) is not None:
-            self.start_training(broadcast.demo(seed, mapping), self.describe(seed, mapping, "broadcast reward: reward when {good}, punishment when {bad}"))
-
-    def console_attention(self, arg: str, mapping: str | None = None) -> None:
-        import attention
-        if (seed := self.parse_training(arg, mapping)) is not None:
-            self.start_training(attention.demo(seed, mapping), self.describe(seed, mapping, "paying attention: attention to the output when {good}"))
-
-    def console_twophase(self, arg: str) -> None:
-        import twophase
-        if (seed := self.parse_training(arg, None)) is not None:
-            self.start_training(twophase.Demo(seed), f"Two loops on a random sheet (seed {seed}): 200 trials of adaptation grow routes "
-                                "from a and b to o; then 150 trials teaching a, then 150 teaching b, by reward only (cells fire by chance "
-                                "while being taught; each cell's temperature rises where activity goes unrewarded); every 10 teaching "
-                                "trials, a and b are tested alone. Press w to watch the weights; speed 50 to hurry")
-
-    def parse_training(self, seed_str: str, mapping: str | None) -> int | None:
-        import broadcast
         try:
-            seed = int(seed_str)
+            seed = int(arg)
         except ValueError:
-            print(f"Invalid seed '{seed_str}'")
-            return None
-        if mapping is not None and mapping not in broadcast.MAPPINGS:
-            print(f"Unknown mapping '{mapping}' (one of: {', '.join(broadcast.MAPPINGS)})")
-            return None
-        return seed
-
-    @staticmethod
-    def describe(seed: int, mapping: str | None, how: str) -> str:
-        import broadcast
-        pairs = {"a": "x"} if mapping is None else broadcast.MAPPINGS[mapping]
-        good = " or ".join(f"{i} reaches {o}" for i, o in pairs.items())
-        bad = " or ".join(f"{i} reaches {'y' if o == 'x' else 'x'}" for i, o in pairs.items())
-        trials = "each trial strikes a" if mapping is None else "trials alternate a and b"
-        return (f"Training a full sheet with random starting weights (seed {seed}) by {how.format(good=good, bad=bad)}; "
-                f"{trials}; press w to watch the weights")
-
-    def start_training(self, trainer, description: str) -> None:
-        import broadcast
-        self.push_undo_state()
-        self.trainer = trainer
-        self.state = trainer.state
-        self.cells_panel.set_grid_size(self.state.grid_size)
-        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in trainer.at.items()])
-        self.config.update_from_dict(broadcast.broadcast_config().vars)
-        self.chart_panel.trig()
-        print(description)
-
-    def console_rule(self, args: list[str]) -> None:
-        if self.trainer is None:
-            print("No training running (start one with: broadcast SEED, attention SEED or twophase SEED)")
+            print(f"Invalid seed '{arg}'")
             return
-        rule = self.trainer.rule
-        if args:
-            name, value = args
-            if not hasattr(rule, name):
-                print(f"Unknown rule setting '{name}'")
-                return
-            current = getattr(rule, name)
-            try:
-                setattr(rule, name, type(current)(value) if not isinstance(current, bool) else value.lower() in ("1", "true", "on"))
-            except ValueError:
-                print(f"Invalid value '{value}'")
-                return
-        print("Rule: " + ", ".join(f"{f.name}={getattr(rule, f.name)}" for f in dataclasses.fields(rule)))
+        self.push_undo_state()
+        self.trainer = twophase.Demo(seed)
+        self.state = self.trainer.state
+        self.cells_panel.set_grid_size(self.state.grid_size)
+        self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in self.trainer.at.items()])
+        self.config.update_from_dict(self.trainer.ex.config.vars)
+        self.chart_panel.trig()
+        print(f"Learning on a random sheet (seed {seed}), local rules only: 200 trials of adaptation (a and b both "
+              "rewarded for reaching o) grow routes; then 150 trials teaching a, then 150 teaching b (only the taught "
+              "input rewarded). Every 10 teaching trials, a and b are tested with teaching off. Blue shows attention "
+              "travelling back; press w for weights (blue) and temperature (green); speed 50 to hurry")
 
     def console_speed(self, n_str: str) -> None:
         try:
@@ -715,7 +666,10 @@ class SimulatorApp:
                 print(f"[control] {line}")
                 self.execute_console_command(line)
 
-    def run(self) -> None:
+    def run(self, commands: list[str] = ()) -> None:
+        """Run the simulator; commands are submitted first, as if typed at the console."""
+        for command in commands:
+            self.submit(command)
         this_frame_start = time.time()
         try:
             while self.running:

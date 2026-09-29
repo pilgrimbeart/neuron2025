@@ -14,7 +14,7 @@ FLAME_COLOUR = (0, 255, 0)
 ILLUMINATION_COLOUR = (255, 255, 255)
 FLAME_DISPLAY_GAIN = 2.0   # typical peak flame (~0.43) shows near full green
 CELL_FLOOR = 0.1           # a cell never looks darker than 10% grey, so burnt-out cells stay visible
-TRANSDUCER_TINT = 0.4      # transducers always carry 40% blue
+TEACHER_TINT = 0.4         # teacher cells always carry 40% blue
 
 
 class CellsPanel:
@@ -33,7 +33,7 @@ class CellsPanel:
 
     def render(self, state: State, config: SimulationConfig, show_only: str, probes: list[dict],
                temperature: np.ndarray | None = None, max_temperature: float = 1.0) -> None:
-        """Red = energy, green = flame, blue = teaching signal received. 'E' and 'I' show energy and illumination
+        """Red = energy, green = flame, blue = attended (attention passing back through it). 'E' and 'I' show energy and illumination
         in grey. 'W' shows weight in blue (WEIGHT_MAX = full) and, when a training experiment provides one, each
         cell's temperature in green (max_temperature = full)."""
         if show_only == "W":
@@ -53,8 +53,8 @@ class CellsPanel:
             rgb = np.zeros(state.grid_size + (3,))
             rgb[:, :, 0] = state.energy_array
             rgb[:, :, 1] = state.flame_array * FLAME_DISPLAY_GAIN
-            rgb[:, :, 2] = state.modulator_array / (2 * config.get("MIN_STRIKE"))
-            rgb[:, :, 2] += np.where(state.kind_array == physics.TRANSDUCER, TRANSDUCER_TINT, 0.0)
+            rgb[:, :, 2] = state.attention_array > config.get("ATTENTION_REST")          # attended: passing attention on
+            rgb[:, :, 2] += np.where(state.kind_array == physics.TEACHER, TEACHER_TINT, 0.0)
             rgb[state.kind_array != 0] = np.maximum(rgb[state.kind_array != 0], CELL_FLOOR)
         pygame.surfarray.blit_array(self.surface, (np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 

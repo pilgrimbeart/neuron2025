@@ -305,6 +305,54 @@ class ConsolePanel:
         )
 
 
+class WorldPanel:
+    """The robot's world, when one is running: the arena, its red and blue blocks (food ringed in white), and the
+    robot, with a tick for each sensor and a dot for each actuator that lights up as it fires."""
+    FLASH_S = 0.3
+
+    def __init__(self, screen: pygame.Surface, xy: tuple[int, int], size: tuple[int, int]):
+        self.screen = screen
+        self.xy = xy
+        self.size = size
+        self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16)
+
+    def render(self, robot) -> None:
+        pygame.draw.rect(self.screen, (16, 16, 16), (*self.xy, *self.size))
+        if robot is None:
+            self.screen.blit(self.font.render("no world (try: robot 0)", True, (96, 96, 96)), (self.xy[0] + 10, self.xy[1] + 10))
+            return
+        w = robot.world
+        side = min(self.size) - 20
+        scale = side / w.size
+        origin = (self.xy[0] + self.size[0] - side - 10, self.xy[1] + 10)
+        at = lambda p: (origin[0] + p[0] * scale, origin[1] + p[1] * scale)
+        pygame.draw.rect(self.screen, (64, 64, 64), (*origin, side, side), width=1)
+        for xy, colour in robot.blocks:
+            rgb = (220, 40, 40) if colour == 'red' else (40, 80, 255)
+            pygame.draw.circle(self.screen, rgb, at(xy), max(3, scale * 0.6))
+            if colour == robot.food:
+                pygame.draw.circle(self.screen, (255, 255, 255), at(xy), max(4, scale * 0.6) + 2, width=1)
+        centre = at(robot.xy)
+        radius = w.radius * scale
+        pygame.draw.circle(self.screen, (128, 128, 128), centre, radius, width=2)
+        for sensor in robot.sensor_cells:
+            c, s = np.cos(sensor['angle']), np.sin(sensor['angle'])
+            pygame.draw.line(self.screen, (160, 160, 160), (centre[0] + c * radius, centre[1] + s * radius),
+                             (centre[0] + c * (radius + 6), centre[1] + s * (radius + 6)), 2)
+        for i, actuator in enumerate(robot.actuator_cells):
+            c, s = np.cos(actuator['angle']), np.sin(actuator['angle'])
+            lit = robot.t - robot.fired[i] < self.FLASH_S and robot.fired[i] > 0
+            pygame.draw.circle(self.screen, (255, 255, 0) if lit else (64, 64, 0),
+                               (centre[0] + c * radius * 0.7, centre[1] + s * radius * 0.7), 4 if lit else 2)
+        food, poison = robot.counts()
+        recent_food, recent_poison = robot.counts(robot.t - 300)
+        lines = (f"t {robot.t:.0f}s, {robot.food} is food",
+                 f"ate {food} food, {poison} poison",
+                 f"last 5 min {recent_food} food, {recent_poison} poison")
+        for i, line in enumerate(lines):
+            self.screen.blit(self.font.render(line, True, (255, 255, 255)), (self.xy[0] + 6, self.xy[1] + 6 + 18 * i))
+
+
 class HelpOverlay:
     def __init__(self, screen: pygame.Surface):
         self.screen = screen

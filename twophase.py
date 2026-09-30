@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 import physics
-from gates import hline
+from gates import hline, vline
 from model import SimulationConfig, State
 
 TRIAL = 12.0                 # seconds between input pulses on a 32-wide sheet: time to cross, respond, and recover
@@ -33,30 +33,45 @@ DT = 1 / 50
 
 @dataclass
 class Layout:
-    """A random sheet of normal cells (weights START ± SPREAD) filling a grid of the given size, with inputs a
-    (upper) and b (lower) entering from the left, output o leaving from the middle of the right edge, and a teacher
-    cell beside o. Margins and wires scale with the grid (at 32x32: sheet (4,4)-(25,27), input wires 6 cells in)."""
+    """A random sheet of normal cells (weights START ± SPREAD) filling a grid of the given size, with inputs a and b,
+    output o and GOOD and BAD teacher cells beside o. Margins and wires scale with the grid (at 32x32, input wires
+    reach 6 cells into the sheet).
+
+    Default: a (upper) and b (lower) enter from the left, and o leaves from the middle of the right edge.
+    opposite: a enters from the left and b from the right, at the same height, and o leaves from the middle of the
+    bottom edge, so routes from a and b meet at o's entry from opposite sides."""
     seed: int = 0
     size: tuple[int, int] = (32, 32)
     start: float = 0.45
     spread: float = 0.15
+    opposite: bool = False
 
     def build(self) -> tuple[State, dict]:
         w, h = self.size
-        x0, y0, x1, y1 = w // 8, h // 8, w - 1 - (3 * w) // 16, h - 1 - h // 8
         entry = (3 * w) // 16       # the input wires continue this far into the sheet (a front rather than a point)
-        mid, top, bot = (y0 + y1) // 2, y0 + (y1 - y0) // 4, y1 - (y1 - y0) // 4
+        if self.opposite:
+            x0, y0, x1, y1 = w // 8, h // 8, w - 1 - w // 8, h - 1 - (3 * h) // 16
+            row, col = (y0 + y1) // 2, w // 2
+            wires = hline(row, 0, x0 - 1) | hline(row, x1 + 1, w - 1) | vline(col, y1 + 1, h - 1)
+            fronts = [(slice(x0, x0 + entry), row), (slice(x1 - entry + 1, x1 + 1), row)]
+            at = {'a': (0, row), 'b': (w - 1, row), 'o': (col, h - 1), 'good': (col + 1, h - 1), 'bad': (col - 1, h - 1)}
+        else:
+            x0, y0, x1, y1 = w // 8, h // 8, w - 1 - (3 * w) // 16, h - 1 - h // 8
+            mid, top, bot = (y0 + y1) // 2, y0 + (y1 - y0) // 4, y1 - (y1 - y0) // 4
+            wires = hline(top, 0, x0 - 1) | hline(bot, 0, x0 - 1) | hline(mid, x1 + 1, w - 1)
+            fronts = [(slice(x0, x0 + entry), top), (slice(x0, x0 + entry), bot)]
+            at = {'a': (0, top), 'b': (0, bot), 'o': (w - 1, mid), 'good': (w - 1, mid + 1), 'bad': (w - 1, mid - 1)}
         s = State((w, h), seed=self.seed)
         sheet = {(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)}
-        for xy in sheet | hline(top, 0, x0 - 1) | hline(bot, 0, x0 - 1) | hline(mid, x1 + 1, w - 1):
+        for xy in sheet | wires:
             s.set_kind(xy, physics.NORMAL)
-        s.set_kind((w - 1, mid + 1), physics.GOOD)
-        s.set_kind((w - 1, mid - 1), physics.BAD)
+        s.set_kind(at['good'], physics.GOOD)
+        s.set_kind(at['bad'], physics.BAD)
         rng = np.random.default_rng(self.seed)
         s.weight_array[x0:x1 + 1, y0:y1 + 1] = np.clip(self.start + rng.normal(0, self.spread, (x1 - x0 + 1, y1 - y0 + 1)), 0, None)
-        for row in (top, bot):
-            s.weight_array[x0:x0 + entry, row] = 1.0
-        return s, {'a': (0, top), 'b': (0, bot), 'o': (w - 1, mid), 'good': (w - 1, mid + 1), 'bad': (w - 1, mid - 1)}
+        for xs, y in fronts:
+            s.weight_array[xs, y] = 1.0
+        return s, at
 
 
 class Experiment:
@@ -65,8 +80,8 @@ class Experiment:
     teacher). label names the inputs struck together: 'a', 'b', 'ab', or None."""
 
     def __init__(self, seed: int = 0, size: tuple[int, int] = (32, 32), config: SimulationConfig | None = None,
-                 start: float = 0.45):
-        self.state, self.at = Layout(seed, size, start).build()
+                 start: float = 0.45, opposite: bool = False):
+        self.state, self.at = Layout(seed, size, start, opposite=opposite).build()
         self.config = config or SimulationConfig()
         scale = size[0] / 32                    # a wider sheet takes proportionally longer to cross
         self.trial_time = TRIAL * scale
@@ -142,20 +157,28 @@ def score(seed: int, adapt_trials: int = 200, teach_trials: int = 150, verbose: 
 
 
 def score_and(seed: int, adapt_trials: int = 200, and_trials: int = 300, verbose: bool = False,
-              params: dict | None = None, size: tuple[int, int] = (32, 32), start: float = 0.45) -> dict:
-    """Adapt (a and b both rewarded), then teach AND: a and b struck together are rewarded if o responds, a alone or
-    b alone punished if it does. With teaching off, a+b must reach o and neither alone may."""
-    ex = Experiment(seed, size, SimulationConfig(dict(physics.DEFAULT_PARAMS, **(params or {}))), start)
+              params: dict | None = None, size: tuple[int, int] = (32, 32), start: float = 0.45,
+              opposite: bool = False, block_trials: int = 0, shuffle: bool = False) -> dict:
+    """Adapt (a and b both rewarded; adapt_trials=0 skips this), then teach AND: a and b struck together are rewarded
+    if o responds, a alone or b alone punished if it does, in rotation or (shuffle) in random order. With teaching off,
+    a+b must reach o and neither alone may."""
+    ex = Experiment(seed, size, SimulationConfig(dict(physics.DEFAULT_PARAMS, **(params or {}))), start, opposite)
     log = lambda *a: verbose and print(*a, flush=True)
     labels = ('ab', 'a', 'b', '-')
     for n in range(adapt_trials):
         ex.trial('teach', 'ab'[n % 2])
     result = {'seed': seed, 'adapted': ex.rates(4, labels)}
     log('after adaptation', result['adapted'])
+    for n in range(block_trials):               # first, punish single inputs only, until neither passes alone
+        ex.trial('teach', 'ab'[n % 2], False)
+    if block_trials:
+        result['blocked'] = ex.rates(4, labels)
+        log('after blocking', result['blocked'])
     schedule = [('ab', True), ('a', False), ('b', False)]
     rewards = punishments = 0
+    order = np.random.default_rng(3000 + seed)               # shuffle: each trial's input chosen at random
     for n in range(and_trials):
-        r = ex.trial('teach', *schedule[n % 3])
+        r = ex.trial('teach', *schedule[order.integers(3) if shuffle else n % 3])
         rewards += r['rewarded']
         punishments += r['punished']
         if verbose and n % 30 == 29:

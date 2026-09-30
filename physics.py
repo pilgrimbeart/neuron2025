@@ -41,8 +41,9 @@ Each time step (dt seconds):
      fired beside a valued route without causing anything on it (backflow into a competing route, or a side leak).
   9. while teaching:
        a cell newly attended by a reward gains CREDIT weight and cools to T_BASE; by a punishment, loses PUNISH
-       (if WEAKEST > 0, a cell whose weight is at least RELIABLE does so only as a weakest link: if it fired more
-       than WEAKEST times more slowly after its cause than any cell attention met on its way back from the teacher)
+       (if WEAKEST > 0, punishment, and credit to a cell whose weight is at least RELIABLE, go only to a weakest link:
+       a cell that fired more than WEAKEST times more slowly after its cause than any cell attention met on its way
+       back from the teacher)
        a leak (beside a rewarded route) loses BLAME weight
        every ignition costs FIRE_COST weight (firing costs; being useful pays)
        a near miss (ready to fire, lit to NEAR_MISS of its threshold, but not igniting) warms at HEAT per second,
@@ -282,9 +283,9 @@ def _step(kind, energy, flame, weight, trace, delay, attention, valence, suspici
                 valence[x, y] = heard_valence[x, y]
                 delay[x, y] = max(lag[x, y], heard_slowest[x, y])     # the slowest firing met so far on the way back
                 attention[x, y] = ATTENTION_TIME + ATTENTION_REST
-                credited = WEAKEST == 0 or weight[x, y] < RELIABLE or lag[x, y] > heard_slowest[x, y] * WEAKEST
-                rewarded[x, y] = credited and heard_valence[x, y] > 0
-                punished[x, y] = credited and heard_valence[x, y] < 0
+                weakest = WEAKEST == 0 or lag[x, y] > heard_slowest[x, y] * WEAKEST
+                rewarded[x, y] = heard_valence[x, y] > 0 and (weakest or weight[x, y] < RELIABLE)
+                punished[x, y] = heard_valence[x, y] < 0 and weakest
             else:
                 attention[x, y] = max(attention[x, y] - dt, 0.0)
             before = suspicion[x, y]

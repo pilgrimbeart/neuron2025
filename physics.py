@@ -40,12 +40,14 @@ Each time step (dt seconds):
      CAUSE_WINDOW of an attended neighbour and stays next to it for BLAME_DELAY without being accepted is a leak: it
      fired beside a valued route without causing anything on it (backflow into a competing route, or a side leak).
   9. while teaching:
-       a cell newly attended by a reward gains CREDIT weight and cools to T_BASE; by a punishment, loses PUNISH
+       a cell newly attended by a reward gains CREDIT weight and cools to T_BASE; by a punishment, loses PUNISH, but
+       not below PUNISH_FLOOR
        (if WEAKEST > 0, punishment, and credit to a cell whose weight is at least RELIABLE, go only to a weakest link:
        a cell that fired more than WEAKEST times more slowly after its cause than any cell attention met on its way
        back from the teacher)
        a leak (beside a rewarded route) loses BLAME weight
-       every ignition costs FIRE_COST weight (firing costs; being useful pays)
+       every ignition costs FIRE_COST weight (firing costs; being useful pays), and a cell that hasn't fired within
+       TRACE_TIME gains RECOVER weight per second (quiet cells slowly become excitable again)
        a near miss (ready to fire, lit to NEAR_MISS of its threshold, but not igniting) warms at HEAT per second,
        unless attention is within light's reach (two cells), which cools it to T_BASE; heat fades with COOL_TIME
      weights stay within WEIGHT_MIN..WEIGHT_MAX, and T within T_BASE..T_MAX.
@@ -86,9 +88,11 @@ DEFAULT_PARAMS = {
     "CREDIT": 0.2,
     "BLAME": 0.05,
     "PUNISH": 0.1,
+    "PUNISH_FLOOR": 0.0,
     "WEAKEST": 0.0,
     "RELIABLE": 0.0,
     "FIRE_COST": 0.002,
+    "RECOVER": 0.0,
     "WEIGHT_MIN": 0.0,
     "WEIGHT_MAX": 2.0,
     "CHANCE_RATE": 5.0,
@@ -236,8 +240,8 @@ def _attention(trace, attended, valence, slowest, receptive, teacher, tol, windo
 @numba.njit(cache=True)
 def _step(kind, energy, flame, weight, trace, delay, attention, valence, suspicion, heat, noise, learning, k, P, dt):
     (COUPLING_DIST, COUPLING_GAIN, FLAME_CONSUME, FLAME_INERTIA, MIN_FLAME, MIN_STRIKE, STRIKE_LEVEL, SUPPLY, TRACE_TIME,
-     ATTENTION_TOL, CAUSE_WINDOW, ATTENTION_TIME, ATTENTION_REST, BLAME_DELAY, CREDIT, BLAME, PUNISH, WEAKEST,
-     RELIABLE, FIRE_COST, WEIGHT_MIN, WEIGHT_MAX, CHANCE_RATE, T_BASE, T_MAX, HEAT, NEAR_MISS, COOL_TIME) = P
+     ATTENTION_TOL, CAUSE_WINDOW, ATTENTION_TIME, ATTENTION_REST, BLAME_DELAY, CREDIT, BLAME, PUNISH, PUNISH_FLOOR, WEAKEST,
+     RELIABLE, FIRE_COST, RECOVER, WEIGHT_MIN, WEIGHT_MAX, CHANCE_RATE, T_BASE, T_MAX, HEAT, NEAR_MISS, COOL_TIME) = P
     w, h = kind.shape
     energy, flame, weight, heat = energy.copy(), flame.copy(), weight.copy(), heat.copy()
 
@@ -302,10 +306,14 @@ def _step(kind, energy, flame, weight, trace, delay, attention, valence, suspici
                         if _inside(nx, ny, w, h):
                             near_attention[nx, ny] = True
         cool = math.exp(-dt / COOL_TIME)
+        fade_out = math.exp(-1.0)                           # a trace this faded: not fired within TRACE_TIME
         for x in range(w):
             for y in range(h):
-                wv = weight[x, y] + CREDIT * rewarded[x, y] - PUNISH * punished[x, y] - BLAME * leak[x, y] \
-                    - FIRE_COST * ignited[x, y]
+                wv = weight[x, y] + CREDIT * rewarded[x, y] - BLAME * leak[x, y] - FIRE_COST * ignited[x, y]
+                if trace[x, y] < fade_out:                  # quiet for a while: slowly become more excitable again
+                    wv += RECOVER * dt
+                if punished[x, y]:                          # punishment never takes a cell below PUNISH_FLOOR
+                    wv = max(wv - PUNISH, min(wv, PUNISH_FLOOR))
                 if kind[x, y] == NORMAL:
                     wv = min(max(wv, WEIGHT_MIN), WEIGHT_MAX)
                 weight[x, y] = wv

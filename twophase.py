@@ -26,7 +26,7 @@ from gates import hline, vline
 from model import SimulationConfig, State
 
 TRIAL = 12.0                 # seconds between input pulses on a 32-wide sheet: time to cross, respond, and recover
-RESPONSE = (1.0, 9.0)        # o firing this long after the input (32-wide) counts as a response to it
+RESPONSE = (0.0, 9.0)        # o firing this long after the input (32-wide) counts as a response to it
 TEACHER_DELAY = 0.3          # the teacher strikes its cell this long after seeing o respond
 DT = 1 / 50
 

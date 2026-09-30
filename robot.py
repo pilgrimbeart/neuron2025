@@ -50,35 +50,47 @@ class World:
 
 
 class Geometry:
-    """Where the inputs and outputs sit on the disc."""
+    """The disc of cells, and where the inputs and outputs sit on it. Cells are numbered; inputs, outputs and taste
+    cells are cell numbers, and xy says where each cell is drawn."""
 
     def __init__(self, body: Body = Body()):
         n = body.grid
         c = (n - 1) / 2
         rim = n / 2 - 1
-        xs, ys = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
-        self.alive = (xs - c) ** 2 + (ys - c) ** 2 <= (n / 2) ** 2
-        at = lambda angle, r: (int(round(c + r * math.cos(angle))), int(round(c + r * math.sin(angle))))
+        self.size = n
+        inside = lambda x, y: 0 <= x < n and 0 <= y < n and (x - c) ** 2 + (y - c) ** 2 <= (n / 2) ** 2
+        self.xy = np.array([(x, y) for x in range(n) for y in range(n) if inside(x, y)])
+        index = {tuple(p): i for i, p in enumerate(self.xy)}
+        self.sheet = cell.Sheet([[index[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                                  if (dx or dy) and inside(x + dx, y + dy)] for x, y in self.xy])
+        at = lambda angle, r: index[(int(round(c + r * math.cos(angle))), int(round(c + r * math.sin(angle))))]
         s = body.sensors
         self.angles = np.array([2 * math.pi * i / s for i in range(s)])
         offset = 1.5 / rim
-        self.inputs = np.array([[at(a - offset, rim), at(a + offset, rim)] for a in self.angles])    # (s, colour, 2)
-        self.outputs = np.array([at(a, rim) for a in self.angles])                                  # (s, 2)
-        self.taste = np.array([at(a, rim - 1) for a in self.angles])                                # (s, 2)
+        self.inputs = np.array([[at(a - offset, rim), at(a + offset, rim)] for a in self.angles])    # (s, colour)
+        self.outputs = np.array([at(a, rim) for a in self.angles])                                  # (s,)
+        self.taste = np.array([at(a, rim - 1) for a in self.angles])                                # (s,)
         m = int(c)
-        self.centre = np.array([(m, m), (m + 1, m), (m, m + 1), (m + 1, m + 1)])
+        self.centre = np.array([index[p] for p in ((m, m), (m + 1, m), (m, m + 1), (m + 1, m + 1))])
+
+    def grid(self, values: np.ndarray) -> np.ndarray:
+        """Per-cell values laid out on the square grid (0 outside the disc), for drawing."""
+        out = np.zeros((self.size, self.size))
+        out[self.xy[:, 0], self.xy[:, 1]] = values[:len(self.xy)]
+        return out
 
 
 NOISE = 0.1                     # every life starts with each cell variable uniform in -NOISE..NOISE
 
 
 @njit(cache=True)
-def start(alive, seed_):
-    """Seed the world's randomness, and give every cell's variables small random values: the state, (K, n, n)."""
+def start(n, seed_):
+    """Seed the world's randomness, and give every cell's variables small random values: the state, (K, n + 1)."""
     np.random.seed(seed_)
-    state = np.zeros((cell.K,) + alive.shape)
+    state = np.zeros((cell.K, n + 1))
     for a in range(cell.K):
-        state[a] = np.where(alive, (np.random.random(alive.shape) * 2 - 1) * NOISE, 0.0)
+        for i in range(n):
+            state[a, i] = (np.random.random() * 2 - 1) * NOISE
     return state
 
 
@@ -94,9 +106,11 @@ def _place(blocks, b, pos, w):
 
 
 @njit(cache=True)
-def tick(state, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts, high, w):
-    """One tick of the robot and its world. Mutates pos, blocks, counts (food eaten, poison eaten, thruster firings)
-    and high (actuator above FIRE_LEVEL); returns the new state and a mask of the actuators that fired."""
+def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
+         high, fired, w):
+    """One tick of the robot and its world: from state, the next state is written into new (x is scratch). Mutates
+    pos, blocks, counts (food eaten, poison eaten, thruster firings), high (actuator above FIRE_LEVEL) and fired
+    (which actuators fired this tick)."""
     size, radius, reach, rate, push, kick, contact, middle = w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]
     for s in range(len(angles)):                               # senses
         fx, fy = math.cos(angles[s]), math.sin(angles[s])
@@ -108,16 +122,15 @@ def tick(state, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks
                     d = math.sqrt(dx * dx + dy * dy) + 1e-9
                     seen += max(0.0, (fx * dx + fy * dy) / d) / (1 + (d / reach) ** 2)
             if np.random.random() < rate * min(1.0, seen):
-                x, y = inputs[s, colour, 0], inputs[s, colour, 1]
-                state[0, x, y] = min(1.0, state[0, x, y] + kick)
-    state = cell.step(state, alive, rule)
-    fired = np.zeros(len(angles), dtype=np.bool_)
+                i = inputs[s, colour]
+                state[0, i] = min(1.0, state[0, i] + kick)
+    cell.step(state, new, x, neighbours, weight, rule)
     for s in range(len(angles)):                               # actions
-        now = state[0, outputs[s, 0], outputs[s, 1]] > cell.FIRE_LEVEL
-        if now and not high[s]:
+        now = new[0, outputs[s]] > cell.FIRE_LEVEL
+        fired[s] = now and not high[s]
+        if fired[s]:
             pos[0] -= push * math.cos(angles[s])
             pos[1] -= push * math.sin(angles[s])
-            fired[s] = True
             counts[2] += 1
         high[s] = now
     pos[0] = min(size - radius, max(radius, pos[0]))
@@ -133,25 +146,41 @@ def tick(state, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks
                 if along > best:
                     facing, best = s, along
             sign = 1.0 if good else -1.0
-            x, y = taste[facing, 0], taste[facing, 1]
-            state[0, x, y] = min(1.0, max(-1.0, state[0, x, y] + sign * contact))
+            i = taste[facing]
+            new[0, i] = min(1.0, max(-1.0, new[0, i] + sign * contact))
             for t in range(len(centre)):
-                x, y = centre[t, 0], centre[t, 1]
-                state[0, x, y] = min(1.0, max(-1.0, state[0, x, y] + sign * middle))
+                i = centre[t]
+                new[0, i] = min(1.0, max(-1.0, new[0, i] + sign * middle))
             _place(blocks, b, pos, w)
-    return state, fired
 
 
 @njit(cache=True)
-def live(rule, alive, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
+def live(rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
     """A whole life; returns (food, poison, firings) for each half of it, shape (2, 3). Moves pos and blocks."""
-    state = start(alive, seed_)
+    n = neighbours.shape[0]
+    a = start(n, seed_)
+    b = np.zeros_like(a)
+    x = np.zeros((cell.N_INPUTS, n))
     counts = np.zeros((2, 3), dtype=np.int64)
     high = np.zeros(len(angles), dtype=np.bool_)
+    fired = np.zeros(len(angles), dtype=np.bool_)
     for t in range(ticks):
         half = counts[0] if t < ticks // 2 else counts[1]
-        state, _fired = tick(state, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, half, high, w)
+        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, half, high,
+             fired, w)
+        a, b = b, a
     return counts
+
+
+def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, ticks: int):
+    """A whole life in a fresh world: (per-half counts, as `live`; start position; final position; the blocks
+    at the start; the blocks at the end)."""
+    pos, blocks = setup(task, seed_, food, world)
+    start_pos, first = pos.copy(), blocks.copy()
+    g = geometry
+    counts = live(rule, g.sheet.neighbours, g.sheet.weight, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos,
+                  blocks, food, world.array(), ticks, seed_)
+    return counts, start_pos, pos, first, blocks
 
 
 def setup(task: str, seed_: int, food: int, world: World = World()):
@@ -181,15 +210,20 @@ class Robot:
         self.rule, self.task, self.food, self.world = rule, task, food, world
         self.geometry = g = Geometry(body)
         self.pos, self.blocks = setup(task, seed_, food, world)
-        self.state = start(g.alive, seed_)
+        self.state = start(g.sheet.n, seed_)
+        self.new = np.zeros_like(self.state)
+        self.x = np.zeros((cell.N_INPUTS, g.sheet.n))
         self.counts = np.zeros(3, dtype=np.int64)
         self.high = np.zeros(len(g.angles), dtype=np.bool_)
+        self.fired = np.zeros(len(g.angles), dtype=np.bool_)
         self.fired_at = np.full(len(g.angles), -1e9)
         self.ticks = 0
 
     def step(self) -> None:
         g = self.geometry
-        self.state, fired = tick(self.state, g.alive, self.rule, g.angles, g.inputs, g.outputs, g.taste, g.centre,
-                                     self.pos, self.blocks, self.food, self.counts, self.high, self.world.array())
+        tick(self.state, self.new, self.x, g.sheet.neighbours, g.sheet.weight, self.rule, g.angles, g.inputs,
+             g.outputs, g.taste, g.centre, self.pos, self.blocks, self.food, self.counts, self.high, self.fired,
+             self.world.array())
+        self.state, self.new = self.new, self.state
         self.ticks += 1
-        self.fired_at[fired] = self.ticks
+        self.fired_at[self.fired] = self.ticks

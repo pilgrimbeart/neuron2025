@@ -52,11 +52,7 @@ def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False
     global _geometry
     if _geometry is None:
         _geometry = robot.Geometry()
-    g = _geometry
-    pos, blocks = robot.setup(task, seed, food, world)
-    start, first = pos.copy(), blocks.copy()
-    per_half = robot.live(rule, g.alive, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos, blocks, food, world.array(),
-                          TICKS[task], seed)
+    per_half, start, pos, first, blocks = robot.lifetime(rule, _geometry, task, seed, food, world, TICKS[task])
     food_eaten, poison, firings = per_half.sum(axis=0)
     if task == "move":
         value = float(np.hypot(*(pos - start))) / world.radius

@@ -1,4 +1,6 @@
-# neuron2025
+# neuron2025: the hand-designed system
+
+This is the earlier, hand-designed version of the project, superseded by the evolved cell rule (see `../README.md`). It still runs from this folder, using the project's `.venv`: `cd old_manual_gates && ../.venv/bin/python neuron.py`.
 
 `neuron2025` is an interactive Python sandbox for building and probing a 2D field of excitable cells. You "wire" the medium by enabling cells on a grid, inject energy into those cells continuously, and then strike individual locations to watch pulses ignite, propagate, sustain, die out, and interact.
 
@@ -38,14 +40,13 @@ The implementation uses elapsed real time rather than fixed frame steps, and the
 - Python 3
 - `pygame`
 - `numpy`
-- `scipy`
 - `numba` (compiles the per-cell rules in `physics.py`; the first run in a process takes a few seconds)
 - `ffmpeg` on your `PATH` if you want video recording
 
 Install them however you prefer, for example:
 
 ```bash
-pip install pygame numpy scipy numba
+pip install pygame numpy numba
 ```
 
 ## Running
@@ -366,7 +367,7 @@ Learning is reward only: the network acts by itself, and a teacher can only say 
 
 `twophase.py` is the test: a random sheet with inputs `a` and `b` and output `o`. Adaptation (both inputs rewarded for reaching `o`) grows routes; then teaching `a` alone makes `a` pass and `b` not, and teaching `b` switches it. On 16 random 32×32 sheets, with every rule local: routes grow on all 16, teaching `a` blocks `b` on all 16, and the full test (learn `a`, then switch to `b`, each checked with teaching off) passes on 13. On 64×64 sheets (same rules; only the experimenter's timing scales) it passes on 3 of 8. AND (a bad teacher punishing single inputs) doesn't work yet. How we got here, including what failed, is in `LESSONS.md`.
 
-`robot.py` is the final test's framework: a round robot whose brain is a disc of ordinary cells, in a walled arena of red and blue blocks. In each run one colour is food and the other poison, and the robot has to learn which within the run. Eight directional sensors on the rim strike a red or a blue stub of cells at a rate that rises with how much of that colour they see (sparse pulses: a cell takes seconds to refuel); eight actuators on the rim, each between its sensor's two stubs, push the robot towards their side each time they fire, so the fresh sheet has an innate approach to any colour. Eating strikes GOOD or BAD teacher cells beside every actuator. The current rules do not learn this yet: the robot eats both colours alike, and the firing cost wears the sheet down until it stops (`LESSONS.md`). `python robot.py SEEDS MINUTES` compares learning against a no-learning control; `robot SEED [red|blue]` runs it live.
+`robot.py` is the final test's framework: a round robot whose brain is a disc of ordinary cells, in a walled arena of red and blue blocks. In each run one colour is food and the other poison, and the robot has to learn which within the run. Eight directional sensors on the rim strike a red or a blue stub of cells at a rate that rises with how much of that colour they see (sparse pulses: a cell takes seconds to refuel); eight actuators on the rim, each between its sensor's two stubs, push the robot towards their side each time they fire, so the fresh sheet has an innate approach to any colour. Eating strikes GOOD or BAD teacher cells beside every actuator. The current rules do not learn this yet: the robot eats both colours alike, and the firing cost wears the sheet down until it stops (`LESSONS.md`). `python robot.py SEEDS MINUTES` compares learning against a no-learning control; `robot SEED` or `robot SEED FOOD` runs it live.
 
 ### Regression Suite
 
@@ -395,4 +396,4 @@ Two complementary ways to work with the simulator programmatically:
 
 ## Project Status
 
-A compact simulator, a set of verified patterns on one shared parameter set, a regression suite, and a first result in emergent learning with local rules only (`twophase.py`, "Learning" above). There is no packaging or formal file format spec; the module files in the project root are the reference implementation.
+A compact simulator, a set of verified patterns on one shared parameter set, a regression suite, and a first result in emergent learning with local rules only (`twophase.py`, "Learning" above). There is no packaging or formal file format spec; the module files in this folder are the reference implementation.

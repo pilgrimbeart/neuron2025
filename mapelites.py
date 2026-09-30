@@ -59,19 +59,15 @@ def evaluate(args):
     global _geometry
     if _geometry is None:
         _geometry = robot.Geometry()
-    g = _geometry
     rule = genome[:cell.N_PARAMS]
     world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]))
-    w = world.array()
     halves = np.zeros((2, 2))                   # (first, second half) x (food, poison)
     firings = 0
     total = 0.0
     for s in worlds:
         values = []
         for food in (robot.RED, robot.BLUE):
-            pos, blocks = robot.setup(task, s, food, world)
-            per_half = robot.live(rule, g.alive, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos, blocks, food,
-                                  w, evolve.TICKS[task], s)
+            per_half = robot.lifetime(rule, _geometry, task, s, food, world, evolve.TICKS[task])[0]
             halves += per_half[:, :2]
             firings += per_half[:, 2].sum()
             f, p = per_half[:, 0].sum(), per_half[:, 1].sum()

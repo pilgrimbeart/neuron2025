@@ -2,8 +2,8 @@
 
 Each cell holds a few numbers, VARIABLES, each kept within -1..1: v (fast; an actuator fires when it rises through
 FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery) and m (slow, free to use as memory). Every tick,
-every cell looks at its own variables and the mean of each over its (up to) 8 neighbours (nv, nw, nm), and each
-variable x changes by
+every cell looks at its own variables and the mean of each over its neighbours (nv, nw, nm), and each variable x
+changes by
 
     x += RATE[x] x (sum of TERMS weighted by the rule's coefficients for x)
 
@@ -11,6 +11,9 @@ where TERMS are 1, the inputs, and their pairwise products and squares. A rule i
 zero, so that the rule can be said in a sentence or two (`describe`). Small rates make the rule an equation of
 motion (like FitzHugh-Nagumo's): a cell can't flip every tick, so firing has to be a real excursion and recovery;
 m's rate is ten times slower still.
+
+A cell knows nothing of where it is: only its own variables and its neighbours'. The sheet is a list of cells, each
+with up to 8 neighbours (`neighbours`); the body decides who neighbours whom.
 
 Everything outside the cell is a kick to v: a sensor pulse, or a taste.
 """
@@ -23,10 +26,11 @@ from numba import njit
 VARIABLES = ("v", "w", "m")
 RATES = np.array([0.1, 0.1, 0.01])
 K = len(VARIABLES)
-INPUTS = VARIABLES + tuple("n" + x for x in VARIABLES)
-N_TERMS = 1 + 2 * K + 2 * K * (2 * K + 1) // 2
+N_INPUTS = 2 * K
+N_TERMS = 1 + N_INPUTS + N_INPUTS * (N_INPUTS + 1) // 2
 N_PARAMS = K * N_TERMS           # the coefficients for v, then w, then m
 FIRE_LEVEL = 0.5
+MAX_NEIGHBOURS = 8
 
 
 def terms(variables: tuple[str, ...]) -> tuple[str, ...]:
@@ -38,48 +42,56 @@ def terms(variables: tuple[str, ...]) -> tuple[str, ...]:
 TERMS = terms(VARIABLES)
 
 
-@njit(cache=True)
-def step(state, alive, rule):
-    """One tick for every cell. state: (K, n, n) in -1..1; alive: bool (n, n); rule: N_PARAMS coefficients.
-    Returns the new state."""
-    k, n0, n1 = state.shape
-    out = state.copy()
-    x = np.empty(2 * k)
-    t = np.empty(N_TERMS)
-    for i in range(n0):
-        for j in range(n1):
-            if not alive[i, j]:
-                continue
+class Sheet:
+    """Who neighbours whom, and the working space for stepping a sheet of n cells. A state is (K, n + 1): the
+    cells' variables, then a slot that is always zero, where a missing neighbour points."""
+
+    def __init__(self, neighbours: list[list[int]]):
+        n = len(neighbours)
+        self.n = n
+        self.neighbours = np.full((n, MAX_NEIGHBOURS), n, dtype=np.int64)
+        self.weight = np.zeros(n)
+        for i, ns in enumerate(neighbours):
+            self.neighbours[i, :len(ns)] = ns
+            self.weight[i] = 1.0 / len(ns) if ns else 0.0
+
+    def state(self) -> np.ndarray:
+        return np.zeros((K, self.n + 1))
+
+
+@njit(cache=True, fastmath=True)
+def step(state, out, x, neighbours, weight, rule):
+    """One tick for every cell: reads state, writes out (both (K, n + 1)); x is scratch, (N_INPUTS, n)."""
+    k = state.shape[0]
+    n = neighbours.shape[0]
+    for a in range(k):                                  # the inputs: own variables, and neighbours' means
+        for i in range(n):
+            x[a, i] = state[a, i]
+            s = 0.0
+            for j in range(neighbours.shape[1]):
+                s += state[a, neighbours[i, j]]
+            x[k + a, i] = s * weight[i]
+    for a in range(k):                                  # constant and linear terms
+        c0 = rule[a * N_TERMS]
+        for i in range(n):
+            out[a, i] = c0
+        for p in range(N_INPUTS):
+            c = rule[a * N_TERMS + 1 + p]
+            for i in range(n):
+                out[a, i] += c * x[p, i]
+    t = 1 + N_INPUTS                                    # products and squares
+    for p in range(N_INPUTS):
+        for q in range(p, N_INPUTS):
             for a in range(k):
-                x[a] = state[a, i, j]
-                x[k + a] = 0.0
-            count = 0
-            for di in (-1, 0, 1):
-                for dj in (-1, 0, 1):
-                    if di == 0 and dj == 0:
-                        continue
-                    p, q = i + di, j + dj
-                    if 0 <= p < n0 and 0 <= q < n1 and alive[p, q]:
-                        for a in range(k):
-                            x[k + a] += state[a, p, q]
-                        count += 1
-            if count:
-                for a in range(k):
-                    x[k + a] /= count
-            t[0] = 1.0
-            for a in range(2 * k):
-                t[1 + a] = x[a]
-            c = 1 + 2 * k
-            for a in range(2 * k):
-                for b in range(a, 2 * k):
-                    t[c] = x[a] * x[b]
-                    c += 1
-            for a in range(k):
-                d = 0.0
-                for c in range(N_TERMS):
-                    d += rule[a * N_TERMS + c] * t[c]
-                out[a, i, j] = min(1.0, max(-1.0, state[a, i, j] + RATES[a] * d))
-    return out
+                c = rule[a * N_TERMS + t]
+                for i in range(n):
+                    out[a, i] += c * x[p, i] * x[q, i]
+            t += 1
+    for a in range(k):                                  # move each variable by its rate, within -1..1
+        r = RATES[a]
+        for i in range(n):
+            out[a, i] = min(1.0, max(-1.0, state[a, i] + r * out[a, i]))
+        out[a, n] = 0.0
 
 
 def describe(rule, threshold: float = 1e-3) -> str:

@@ -107,23 +107,23 @@ class App:
 
     def draw_cells(self, x0, y0, side) -> None:
         r, g = self.robot, self.robot.geometry
-        rgb = np.zeros(g.alive.shape + (3,))
-        v, blue = r.state[0], r.state[cell.VARIABLES.index(self.blue)]
+        v, blue = g.grid(r.state[0]), g.grid(r.state[cell.VARIABLES.index(self.blue)])
+        alive = g.grid(np.ones(g.sheet.n)) > 0
+        rgb = np.zeros(v.shape + (3,))
         rgb[..., 0] = np.clip(-v, 0, 1)
         rgb[..., 1] = np.clip(v, 0, 1)
         rgb[..., 2] = (blue + 1) / 2 * 0.8
-        rgb[~g.alive] = 0
+        rgb[~alive] = 0
         surface = pygame.surfarray.make_surface((rgb * 255).astype(np.uint8))
         self.screen.blit(pygame.transform.scale(surface, (side, side)), (x0, y0))
-        scale = side / g.alive.shape[0]
+        scale = side / g.size
+        box = lambda i, rgb_, width: pygame.draw.rect(
+            self.screen, rgb_, (x0 + g.xy[i, 0] * scale, y0 + g.xy[i, 1] * scale, scale, scale), width=width)
         for s in range(len(g.angles)):
-            for colour, rgb_ in ((0, (255, 80, 80)), (1, (80, 120, 255))):
-                x, y = g.inputs[s, colour]
-                pygame.draw.rect(self.screen, rgb_, (x0 + x * scale, y0 + y * scale, scale, scale), width=2)
-            x, y = g.outputs[s]
-            pygame.draw.rect(self.screen, (255, 255, 0), (x0 + x * scale, y0 + y * scale, scale, scale), width=2)
-        for x, y in g.taste:
-            pygame.draw.rect(self.screen, (255, 255, 255), (x0 + x * scale, y0 + y * scale, scale, scale), width=1)
+            box(g.inputs[s, 0], (255, 80, 80), 2)
+            box(g.inputs[s, 1], (80, 120, 255), 2)
+            box(g.outputs[s], (255, 255, 0), 2)
+            box(g.taste[s], (255, 255, 255), 1)
 
     def draw_world(self, x0, y0, w, h) -> None:
         r, world = self.robot, self.robot.world
@@ -199,7 +199,7 @@ class App:
                 for _ in range(self.speed):
                     self.robot.step()
                     g = self.robot.geometry
-                    self.trace.append(self.robot.state[0, g.outputs[:, 0], g.outputs[:, 1]].copy())
+                    self.trace.append(self.robot.state[0, g.outputs].copy())
                 self.trace = self.trace[-400:]
             half_w, half_h = self.width // 2, self.height // 2
             self.screen.fill((0, 0, 0))

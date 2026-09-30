@@ -54,7 +54,7 @@ class CellsPanel:
             rgb[:, :, 0] = state.energy_array
             rgb[:, :, 1] = state.flame_array * FLAME_DISPLAY_GAIN
             rgb[:, :, 2] = state.attention_array > config.get("ATTENTION_REST")          # attended: passing attention on
-            rgb[:, :, 2] += np.where(state.kind_array == physics.TEACHER, TEACHER_TINT, 0.0)
+            rgb[:, :, 2] += np.where(np.isin(state.kind_array, physics.TEACHERS), TEACHER_TINT, 0.0)
             rgb[state.kind_array != 0] = np.maximum(rgb[state.kind_array != 0], CELL_FLOOR)
         pygame.surfarray.blit_array(self.surface, (np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 

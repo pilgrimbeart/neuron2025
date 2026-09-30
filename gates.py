@@ -164,7 +164,7 @@ def build_state(name: str) -> tuple[State, list[dict]]:
     for xy in cells:
         state.set_kind(xy, physics.NORMAL)
     for xy in teachers:
-        state.set_kind(xy, physics.TEACHER)
+        state.set_kind(xy, physics.GOOD)
     return state, [{'xy': xy, 'label': label} for label, xy in probes.items()]
 
 

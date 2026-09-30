@@ -19,7 +19,7 @@ from recording import VideoRecorder
 from views import CellsPanel, ChartPanel, ConsolePanel, HelpOverlay
 
 
-KIND_NAMES = {physics.EMPTY: "empty", physics.NORMAL: "normal", physics.TEACHER: "teacher"}
+KIND_NAMES = {physics.EMPTY: "empty", physics.NORMAL: "normal", physics.GOOD: "good", physics.BAD: "bad"}
 
 CONTROL_IN_PATH = Path("control_in.txt")
 CONTROL_OUT_PATH = Path("control_out.log")
@@ -351,6 +351,7 @@ class SimulatorApp:
         self.state = state
         self.cells_panel.set_grid_size(self.state.grid_size)
         self.chart_panel.set_probes(probes)
+        self.config.reset()
         self.config.update_from_dict(vars_dict)
         print(f"Loaded {name}.json")
         self.check_config_safety()
@@ -520,8 +521,8 @@ class SimulatorApp:
             return
 
         if event.button == 1 and pygame.key.get_mods() & pygame.KMOD_CTRL:
-            is_teacher = self.state.kind_array[cell_xy] == physics.TEACHER
-            self.submit(f"{'disable' if is_teacher else 'teacher'} {cell_xy[0]} {cell_xy[1]}")
+            is_teacher = self.state.kind_array[cell_xy] == physics.GOOD
+            self.submit(f"{'disable' if is_teacher else 'good'} {cell_xy[0]} {cell_xy[1]}")
             self.dragging_state = None
         elif event.button == 1:
             self.push_undo_state()
@@ -620,16 +621,17 @@ class SimulatorApp:
             print(f"Invalid seed '{arg}'")
             return
         self.push_undo_state()
-        self.trainer = twophase.Demo(seed)
+        self.config.reset()                     # a clean slate: the shared parameters, which `set` then changes live
+        self.trainer = twophase.Demo(seed, self.state.grid_size, self.config)
         self.state = self.trainer.state
         self.cells_panel.set_grid_size(self.state.grid_size)
         self.chart_panel.set_probes([{"xy": xy, "label": label} for label, xy in self.trainer.at.items()])
-        self.config.update_from_dict(self.trainer.ex.config.vars)
         self.chart_panel.trig()
-        print(f"Learning on a random sheet (seed {seed}), local rules only: 200 trials of adaptation (a and b both "
-              "rewarded for reaching o) grow routes; then 150 trials teaching a, then 150 teaching b (only the taught "
-              "input rewarded). Every 10 teaching trials, a and b are tested with teaching off. Blue shows attention "
-              "travelling back; press w for weights (blue) and temperature (green); speed 50 to hurry")
+        w, h = self.state.grid_size
+        print(f"Learning on a random {w}x{h} sheet (seed {seed}), local rules only: 200 trials of adaptation (a and b "
+              "both rewarded for reaching o) grow routes; then 150 trials teaching a, then 150 teaching b (only the "
+              "taught input rewarded). Every 10 teaching trials, a and b are tested with teaching off. Blue shows "
+              "attention travelling back; press w for weights (blue) and temperature (green)")
 
     def console_speed(self, n_str: str) -> None:
         try:

@@ -19,8 +19,14 @@ class SimulationConfig:
         self.vars[name] = float(value)
 
     def update_from_dict(self, values: dict[str, float]) -> None:
+        """Set the parameters given; any the physics no longer has (from an older file) are ignored."""
         for key, value in values.items():
-            self.vars[key] = float(value)
+            if key in physics.DEFAULT_PARAMS:
+                self.vars[key] = float(value)
+
+    def reset(self) -> None:
+        """Back to the shared defaults."""
+        self.vars = copy.deepcopy(physics.DEFAULT_PARAMS)
 
     def stuck_on_risk(self) -> bool:
         return physics.stuck_on_risk(self.vars)
@@ -30,9 +36,9 @@ class State:
     """The grid of cells, plus editing operations. The cell behaviour itself is in physics.py."""
 
     # Per-cell arrays and the value an empty or newly exposed cell holds.
-    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "trace": 0.0, "attention": 0.0,
-              "suspicion": 0.0, "heat": 0.0, "illumination": 0.0}
-    SAVED = ("kind", "energy", "flame", "weight", "trace", "attention", "suspicion", "heat")
+    ARRAYS = {"kind": physics.EMPTY, "energy": 0.0, "flame": 0.0, "weight": 1.0, "trace": 0.0, "delay": 0.0,
+              "attention": 0.0, "valence": 0.0, "suspicion": 0.0, "heat": 0.0, "illumination": 0.0}
+    SAVED = ("kind", "energy", "flame", "weight", "trace", "delay", "attention", "valence", "suspicion", "heat")
 
     def __init__(self, grid_size: tuple[int, int], seed: int = 0):
         self.grid_size = grid_size
@@ -67,7 +73,7 @@ class State:
     def reset_energy_and_flame(self) -> None:
         """Flame off, energy full wherever there is a cell."""
         self.energy_array[:] = np.where(self.kind_array != physics.EMPTY, 1.0, 0.0)
-        for name in ("flame", "trace", "attention", "suspicion", "illumination"):
+        for name in ("flame", "trace", "delay", "attention", "valence", "suspicion", "illumination"):
             getattr(self, f"{name}_array")[:] = 0
 
     def update(self, delta_s: float, config: SimulationConfig) -> None:
@@ -82,8 +88,10 @@ class State:
             return False
         self.flame_array[xy] = config.get("STRIKE_LEVEL")
         self.trace_array[xy] = 1.0
-        if self.kind_array[xy] == physics.TEACHER:
+        if self.kind_array[xy] in physics.TEACHERS:
             self.attention_array[xy] = config.get("ATTENTION_TIME") + config.get("ATTENTION_REST")
+            self.valence_array[xy] = 1.0 if self.kind_array[xy] == physics.GOOD else -1.0
+            self.delay_array[xy] = 1.0            # nothing slower yet on the way back
         return True
 
     def shift(self, dx: int, dy: int) -> None:

@@ -6,16 +6,16 @@ The aim is **emergent learning**: a medium whose own local dynamics, given some 
 
 ## What The Simulator Models
 
-Each cell of the grid is empty, **normal**, or a **teacher**. A cell has:
+Each cell of the grid is empty, **normal**, or a teacher: **good** or **bad**. A cell has:
 
 - an energy store that replenishes over time,
 - a flame value representing how strongly it is currently burning,
 - a weight: how readily it responds to light (1 = normal). This is what learning changes,
-- a fire trace: 1 when it ignites, then fading. Its neighbours can read it, so it tells them how long ago the cell fired (no clock: two traces fade at the same rate, so comparing them says only which fired first, and by how much),
-- attention: whether it is currently being credited as a cause of something the teacher valued, and passing that back,
+- a fire trace: 1 when it ignites, then fading. Its neighbours can read it. There is no clock: two traces fade at the same rate, so comparing them says only which of two cells fired first and how far apart, never how long ago, so nothing depends on how big the sheet is,
+- attention: whether it is currently being credited (or blamed) as a cause of something a teacher responded to, and passing that back, with its valence: reward or punishment,
 - heat: how much more readily than usual it fires by chance while learning (its temperature above a base).
 
-It receives **illumination** from other normal cells' flames nearby, through a Gaussian coupling. A **teacher** cell gives no light and is never lit; it only burns when struck, and striking it pays attention to whatever just fired beside it. Outside the cells there are only strikes (inputs, and the teacher) and one input, `teaching`, which switches learning on.
+It receives **illumination** from other normal cells' flames nearby, through a Gaussian coupling. A teacher cell gives no light and is never lit; it only burns when struck, and striking it pays attention to whatever just fired beside it: a **good** one as a reward, a **bad** one as a punishment. Outside the cells there are only strikes (inputs, and the teachers) and one input, `teaching`, which switches learning on.
 
 On each simulation step (this is the whole of `physics.py`):
 
@@ -27,7 +27,7 @@ On each simulation step (this is the whole of `physics.py`):
 6. enabled cells refill with fresh energy,
 7. a cell that ignited sets its fire trace to 1; all traces fade,
 8. attention passes one hop back, from effects to causes, by comparing fire traces (see "Learning" below),
-9. while teaching: cells credited as causes strengthen, cells that fired just after a credited neighbour without causing anything (backflow) weaken, every firing costs a little, and near misses that go unrewarded warm up.
+9. while teaching: cells credited as causes of a reward strengthen (of a punishment, weaken), cells that fired beside a rewarded route without causing it (backflow) weaken, every firing costs a little, and near misses that go unrewarded warm up.
 
 Manual strikes follow the same fuel rule: a cell needs at least `STRIKE_LEVEL` energy to be struck.
 
@@ -39,12 +39,13 @@ The implementation uses elapsed real time rather than fixed frame steps, and the
 - `pygame`
 - `numpy`
 - `scipy`
+- `numba` (compiles the per-cell rules in `physics.py`; the first run in a process takes a few seconds)
 - `ffmpeg` on your `PATH` if you want video recording
 
 Install them however you prefer, for example:
 
 ```bash
-pip install pygame numpy scipy
+pip install pygame numpy scipy numba
 ```
 
 ## Running
@@ -98,7 +99,7 @@ The window has three regions:
 
 The grid view can show the combined state or isolate one field:
 
-- default view: red = energy, green = flame (×2), blue = attended (attention passing back through it). An enabled cell at rest is bright red and an empty one black; a cell just ignited looks yellow and turns green as its energy drains; a recovering cell glows dim red. Cells never drop below 10% grey, and teacher cells always carry an extra 40% blue,
+- default view: red = energy, green = flame (×2), blue = attended (attention passing back through it). An enabled cell at rest is bright red and an empty one black; a cell just ignited looks yellow and turns green as its energy drains; a recovering cell glows dim red. Cells never drop below 10% grey, and teacher cells (good and bad) always carry an extra 40% blue,
 - `e`: energy only, grayscale,
 - `i`: illumination (light from other cells) only, grayscale, with the ignition threshold at mid-grey,
 - `w`: weight in blue: neutral (1.0) is half blue, the maximum (2.0) full blue. This is where learning shows. While `twophase` runs, each cell's temperature shows in green (`T_MAX` = full green).
@@ -111,7 +112,7 @@ Chart traces use the same colours: energy red, flame green, illumination white.
 
 - Left click on a cell: toggle it between empty and normal. A new cell starts with full energy and neutral weight.
 - Left-drag: paint more cells with the same enabled/disabled state.
-- Ctrl+click on a cell: toggle it between a teacher and empty (`teacher X Y` / `disable X Y`).
+- Ctrl+click on a cell: toggle it between a good teacher and empty (`good X Y` / `disable X Y`).
 - Right click on a cell: strike it if it has enough energy, and trigger the chart timebase.
 - Click a panel: move keyboard focus between grid, chart, and console.
 
@@ -173,7 +174,8 @@ params               Print the current parameter values
 clear                Clear the enabled pattern and zero activity
 fill                 Enable every cell
 enable X Y           Make a normal cell
-teacher X Y          Make a teacher cell: gives no light and is never lit; striking it pays attention to what just fired beside it
+good X Y             Make a GOOD teacher cell: gives no light, never lit; striking it rewards what just fired beside it
+bad X Y              Make a BAD teacher cell: gives no light, never lit; striking it punishes what just fired beside it
 disable X Y          Remove a cell
 settle               Flame off, energy full where enabled
 unlearn              Reset every cell's weight to 1.0 and its heat to 0 (forget all learning)
@@ -352,12 +354,12 @@ Routing each input across the relay to its output makes the dead time about 3 s 
 
 Learning is reward only: the network acts by itself, and a teacher can only say "yes, that" after the output has fired. It never makes anything fire. Everything it sets off happens cell to cell (steps 2 and 7–9 of `physics.py`):
 
-- **Attention runs back from the reward to its causes.** Striking the teacher cell beside the output makes it attended. An attended cell reads its neighbours' fire traces, finds the one that fired first before it (two cells out if no adjacent one did, as light reaches that far), and offers a level; a neighbour that fired, listening to the attended neighbour that fired soonest after it (the one it could have caused), accepts if its own trace is at or below that level. So attention travels back one hop per step along the route the pulse actually took, even through a flood, and a cell that fired after its neighbour (backflow) is never taken for a cause. After passing attention on, a cell is refractory for a while, so one reward sends one wave.
+- **Attention runs back from the reward to its causes.** Striking the teacher cell beside the output makes it attended. An attended cell reads its neighbours' fire traces, finds the one that fired first in the second before it (two cells out if no adjacent one did, as light reaches that far), and offers a level; a neighbour that fired, listening to the attended neighbour that fired soonest after it (the one it could have caused), accepts if its own trace is at or below that level. So attention travels back one hop per step along the route the pulse actually took, even through a flood, and a cell that fired after its neighbour (backflow) is never taken for a cause. After passing attention on, a cell is refractory for a while, so one reward sends one wave.
 - **Credit and blame.** A cell that accepts attention gains weight. A cell that fired a moment after a credited neighbour and wasn't accepted is backflow: the valued route drove it, but it led nowhere; it loses a little weight. That closes a competing input's route exactly where it joins the rewarded one. Every firing costs a little, so unused activity fades.
 - **Exploration.** While teaching, a cell can fire by chance, far more readily when it is nearly lit enough. Each cell has its own temperature: it warms when it nearly took part (lit, but didn't fire) and no attention came within reach, cools when attention does, and slowly settles back. So chance firing concentrates at the edge of activity that isn't paying off, such as a closed gate beside a stopped pulse.
 - **Teaching on or off.** The `teaching` input switches chance firing and all learning on. With it off the network is deterministic and nothing changes.
 
-`twophase.py` is the test: a random sheet with inputs `a` and `b` and output `o`. Adaptation (both inputs rewarded for reaching `o`) grows routes; then teaching `a` alone makes `a` pass and `b` not, and teaching `b` switches it. On 16 random sheets, with every rule local: routes grow on all 16, teaching `a` blocks `b` on 15, and the full test (learn `a`, then switch to `b`, each checked with teaching off) passes on 14. How we got here, including what failed, is in `LESSONS.md`.
+`twophase.py` is the test: a random sheet with inputs `a` and `b` and output `o`. Adaptation (both inputs rewarded for reaching `o`) grows routes; then teaching `a` alone makes `a` pass and `b` not, and teaching `b` switches it. On 16 random 32×32 sheets, with every rule local: routes grow on all 16, teaching `a` blocks `b` on all 16, and the full test (learn `a`, then switch to `b`, each checked with teaching off) passes on 13. On 64×64 sheets (same rules; only the experimenter's timing scales) it passes on 3 of 8. AND (a bad teacher punishing single inputs) doesn't work yet. How we got here, including what failed, is in `LESSONS.md`.
 
 ### Regression Suite
 

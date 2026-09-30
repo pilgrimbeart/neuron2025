@@ -52,7 +52,8 @@ COMMANDS = [
     Command("clear", "Clear the enabled pattern and zero activity", lambda app, a: app.clear_enabled()),
     Command("fill", "Enable every cell", lambda app, a: app.fill_enabled()),
     Command("enable X Y", "Make a normal cell", lambda app, a: app.console_set_kind(a[0], a[1], physics.NORMAL)),
-    Command("teacher X Y", "Make a teacher cell: gives no light and is never lit; striking it pays attention to what just fired beside it", lambda app, a: app.console_set_kind(a[0], a[1], physics.TEACHER)),
+    Command("good X Y", "Make a GOOD teacher cell: gives no light, never lit; striking it rewards what just fired beside it", lambda app, a: app.console_set_kind(a[0], a[1], physics.GOOD)),
+    Command("bad X Y", "Make a BAD teacher cell: gives no light, never lit; striking it punishes what just fired beside it", lambda app, a: app.console_set_kind(a[0], a[1], physics.BAD)),
     Command("disable X Y", "Remove a cell", lambda app, a: app.console_set_kind(a[0], a[1], physics.EMPTY)),
     Command("settle", "Flame off, energy full where enabled", lambda app, a: app.zero_activity()),
     Command("unlearn", "Reset every cell's weight to 1.0 and its heat to 0 (forget all learning)", lambda app, a: app.unlearn()),
@@ -165,7 +166,7 @@ KEY_ACTIONS = [
 STATIC_HELP = [
     HelpEntry("Mouse", "Left click on grid", "Toggle the enabled state of a cell"),
     HelpEntry("Mouse", "Left drag on grid", "Paint more cells with the same state"),
-    HelpEntry("Mouse", "Ctrl+click on grid", "Toggle a teacher cell (teacher X Y / disable X Y)"),
+    HelpEntry("Mouse", "Ctrl+click on grid", "Toggle a GOOD teacher cell (good X Y / disable X Y)"),
     HelpEntry("Mouse", "Right click on grid", "Strike a cell and retrigger the chart"),
     HelpEntry("Mouse", "Click a panel", "Move focus to grid, chart, or console"),
     HelpEntry("Console", "Enter", "Execute the current console command"),

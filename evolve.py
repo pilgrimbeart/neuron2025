@@ -64,12 +64,11 @@ def geometry() -> robot.Geometry:
 
 
 def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False, world: robot.World = robot.World(),
-         dt: float = 1.0, grown=None):
+         dt: float = 1.0):
     """The task's score for one life at tick size dt, less the cost of activity; with halves, also the (food, poison)
-    eaten in each half. grown is the sheet grown for this rule and dt (`robot.grow`), if already to hand."""
+    eaten in each half."""
     world = dataclasses.replace(world, dt=dt)
-    per_half, start, pos, first, blocks = robot.lifetime(rule, geometry(), task, seed, food, world, DURATION[task],
-                                                         grown)
+    per_half, start, pos, first, blocks = robot.lifetime(rule, geometry(), task, seed, food, world, DURATION[task])
     food_eaten, poison = per_half[:, :2].sum(axis=0)
     if task == "move":
         value = float(np.hypot(*(pos - start))) / world.radius
@@ -102,12 +101,11 @@ def score(rule: np.ndarray, task: str, seeds, dts=DTS) -> float:
 
 
 def score_at(rule: np.ndarray, task: str, seeds, dt: float) -> float:
-    grown = robot.grow(rule, geometry(), dataclasses.replace(robot.World(), dt=dt))
     if task in ("move", "approach"):
-        return float(np.mean([life(rule, task, s, s % 2, dt=dt, grown=grown) for s in seeds]))
+        return float(np.mean([life(rule, task, s, s % 2, dt=dt) for s in seeds]))
     total = 0.0
     for s in seeds:
-        (a, halves_a), (b, halves_b) = (life(rule, task, s, food, halves=True, dt=dt, grown=grown)
+        (a, halves_a), (b, halves_b) = (life(rule, task, s, food, halves=True, dt=dt)
                                         for food in (robot.RED, robot.BLUE))
         total += a + b if task == "taste" else min(a, b)
         (f1, p1), (f2, p2) = halves_a + halves_b
@@ -174,8 +172,7 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
 def _halves(args):
     """(food, poison) in each half, summed over a world's red-food and blue-food lives."""
     rule, task, seed = args
-    grown = robot.grow(rule, geometry(), robot.World())
-    return sum(life(rule, task, seed, food, halves=True, grown=grown)[1] for food in (robot.RED, robot.BLUE))
+    return sum(life(rule, task, seed, food, halves=True)[1] for food in (robot.RED, robot.BLUE))
 
 
 def _score_one(args):
@@ -184,9 +181,9 @@ def _score_one(args):
 
 
 def load(path) -> np.ndarray:
-    """A saved rule, translated to the current form if it was evolved in an earlier one (cell.translate)."""
+    """A saved rule, widened to the current variables if it was evolved with fewer (the new terms zero)."""
     saved = json.loads(Path(path).read_text())
-    return cell.translate(np.array(saved["rule"]), tuple(saved.get("variables", ("v", "w"))))
+    return cell.widen(np.array(saved["rule"]), tuple(saved.get("variables", ("v", "w"))))
 
 
 def load_world(path) -> robot.World:

@@ -19,8 +19,9 @@ wins, scored as in evolve.py, except that learning (the rise in food share from 
 second) only counts when both halves have at least MIN_MEALS meals per life, so that stopping eating can't pass for
 learning. Offspring: a random elite, mutated at a random scale, or crossed with another along the line between them.
 
---seed adds saved rules (with their body genes), each with SEED_VARIANTS small variations, to the first batch: a way
-to bring in rules from another search, such as one evolved under different conditions.
+--seed adds saved rules to the first batches: a kernel (.json, with its body genes) with SEED_VARIANTS small
+variations, or every elite of another search's archive (.pkl). A way to bring in rules from another search, such as
+one on an easier task.
 
 The archive is saved to kernels/map_TASK.pkl, the best-scoring elite to kernels/map_TASK.json and the best learner to
 kernels/map_TASK_learner.json. Fixed worlds let flukes in, so every VALIDATE_EVERY batches the best learner is lived
@@ -73,12 +74,11 @@ def evaluate(args):
     scores, learnings, rates = [], [], []
     for d, dt in enumerate(dts):
         world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]), dt=dt)
-        grown = robot.grow(rule, g, world)
         total = 0.0
         for s in worlds:
             values = []
             for food in (robot.RED, robot.BLUE):
-                per_half = robot.lifetime(rule, g, task, s, food, world, evolve.DURATION[task], grown)[0]
+                per_half = robot.lifetime(rule, g, task, s, food, world, evolve.DURATION[task])[0]
                 halves[d] += per_half[:, :2]
                 f, p = per_half[:, 0].sum(), per_half[:, 1].sum()
                 values.append(f - evolve.POISON * p - evolve.cost(per_half, g.sheet.n, evolve.DURATION[task]))
@@ -145,9 +145,14 @@ def save_rule(path: Path, task: str, elite: dict) -> None:
 
 
 def from_kernels(paths, rng) -> list[np.ndarray]:
-    """Saved rules as genomes, each with SEED_VARIANTS small variations of its rule."""
+    """Saved rules as genomes: each kernel with SEED_VARIANTS small variations of its rule, and every elite of an
+    archive."""
     genomes = []
     for path in paths:
+        if str(path).endswith(".pkl"):
+            archive, _ = pickle.loads(Path(path).read_bytes())
+            genomes += [elite["genome"].copy() for elite in archive.values()]
+            continue
         body = evolve.load_world(path)
         genome = np.r_[evolve.load(path), body.taste_contact, body.taste_centre]
         genomes.append(genome)

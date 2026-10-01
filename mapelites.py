@@ -67,7 +67,7 @@ def evaluate(args):
     for s in worlds:
         values = []
         for food in (robot.RED, robot.BLUE):
-            per_half = robot.lifetime(rule, _geometry, task, s, food, world, evolve.TICKS[task])[0]
+            per_half = robot.lifetime(rule, _geometry, task, s, food, world, evolve.DURATION[task])[0]
             halves += per_half[:, :2]
             firings += per_half[:, 2].sum()
             f, p = per_half[:, 0].sum(), per_half[:, 1].sum()

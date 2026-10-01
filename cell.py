@@ -5,12 +5,13 @@ FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery) and m (slow, 
 every cell looks at its own variables and the mean of each over its neighbours (nv, nw, nm), and each variable x
 changes by
 
-    x += RATE[x] x (sum of TERMS weighted by the rule's coefficients for x)
+    x += RATE[x] x dt x (sum of TERMS weighted by the rule's coefficients for x)
 
 where TERMS are 1, the inputs, and their pairwise products and squares. A rule is those coefficients; most should be
 zero, so that the rule can be said in a sentence or two (`describe`). Small rates make the rule an equation of
 motion (like FitzHugh-Nagumo's): a cell can't flip every tick, so firing has to be a real excursion and recovery;
-m's rate is ten times slower still.
+m's rate is ten times slower still. dt is the simulated time per tick (1 = the tick the rules were evolved at); a
+rule that is a genuine continuous-time system behaves much the same at half or double it.
 
 A cell knows nothing of where it is: only its own variables and its neighbours'. The sheet is a list of cells, each
 with up to 8 neighbours (`neighbours`); the body decides who neighbours whom.
@@ -55,13 +56,10 @@ class Sheet:
             self.neighbours[i, :len(ns)] = ns
             self.weight[i] = 1.0 / len(ns) if ns else 0.0
 
-    def state(self) -> np.ndarray:
-        return np.zeros((K, self.n + 1))
-
 
 @njit(cache=True, fastmath=True)
-def step(state, out, x, neighbours, weight, rule):
-    """One tick for every cell: reads state, writes out (both (K, n + 1)); x is scratch, (N_INPUTS, n)."""
+def step(state, out, x, neighbours, weight, rule, dt):
+    """One tick of dt for every cell: reads state, writes out (both (K, n + 1)); x is scratch, (N_INPUTS, n)."""
     k = state.shape[0]
     n = neighbours.shape[0]
     for a in range(k):                                  # the inputs: own variables, and neighbours' means
@@ -88,7 +86,7 @@ def step(state, out, x, neighbours, weight, rule):
                     out[a, i] += c * x[p, i] * x[q, i]
             t += 1
     for a in range(k):                                  # move each variable by its rate, within -1..1
-        r = RATES[a]
+        r = RATES[a] * dt
         for i in range(n):
             out[a, i] = min(1.0, max(-1.0, state[a, i] + r * out[a, i]))
         out[a, n] = 0.0

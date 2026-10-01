@@ -35,7 +35,7 @@ import numpy as np
 import cell
 import robot
 
-TICKS = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forage": 3000}
+DURATION = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forage": 3000}   # simulated time per life
 LIVES = 16
 POISON = 0.5
 FIRE_COST = 0.001
@@ -52,7 +52,7 @@ def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False
     global _geometry
     if _geometry is None:
         _geometry = robot.Geometry()
-    per_half, start, pos, first, blocks = robot.lifetime(rule, _geometry, task, seed, food, world, TICKS[task])
+    per_half, start, pos, first, blocks = robot.lifetime(rule, _geometry, task, seed, food, world, DURATION[task])
     food_eaten, poison, firings = per_half.sum(axis=0)
     if task == "move":
         value = float(np.hypot(*(pos - start))) / world.radius

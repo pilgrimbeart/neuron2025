@@ -80,15 +80,17 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 - **Works:** move and approach evolve in minutes.
 - **Learns, via MAP-Elites:** the taste task. On fresh worlds, poison is eaten 85% less in the second half of a life, while food is eaten more, and the robot keeps away from poison rather than freezing. The memory is the w of the taste cell that received the bad taste. So it is local: only the side that bit has learned.
 - **Not yet:** choose, which needs colour-specific learning ("red is bad, blue is good"), and forage.
+- **But the evolved rules depend on the tick size.** At half the tick (`World.dt` 0.5) the sheet goes quiet, and at double it they fail. Their activity is overshoot at the coarse step, not continuous-time dynamics (`LESSONS.md`). So every rule so far needs re-evolving across tick sizes.
 
 ## Next steps
 
-1. **Choose:** run MAP-Elites on choose, seeded with the taste run's archive.
-2. **Organism-wide memory:** spread what one side learned to the others, e.g. through centre cells.
-3. **A cell "type" variable,** set early in life and then fixed, if a task needs cells with different jobs.
-4. **Make rules describable:** penalise m (so it rests at 0 unless something is learned), then prune terms one by one while the score holds.
-5. **Speed:**
-   - `cell.py` now steps cells from neighbour lists, one term at a time across all cells, with no per-tick allocation. It's checked to behave the same (statistically, since the dynamics are chaotic), but not yet benchmarked against the previous version, in real and CPU time.
+1. **Evolve across tick sizes:** live every candidate at more than one `dt`, so that no rule can rely on the step.
+2. **Choose:** run MAP-Elites on choose, seeded with the taste run's archive.
+3. **Organism-wide memory:** spread what one side learned to the others, e.g. through centre cells.
+4. **A cell "type" variable,** set early in life and then fixed, if a task needs cells with different jobs.
+5. **Make rules describable:** penalise m (so it rests at 0 unless something is learned), then prune terms one by one while the score holds.
+6. **Speed:**
+   - Stepping cells from neighbour lists, one term at a time, made lives 3.6× faster in one process and 2.4× on all 8 cores (`LESSONS.md`). All 8 cores give only 2.7× one core, because the chip slows under full load.
    - The laptop's Intel Arc GPU is visible to WSL (`/dev/dxg`). Using it would need Intel's compute runtime and PyTorch's Intel GPU backend, and a batched rewrite of the simulation.
 
 ## Requirements

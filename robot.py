@@ -1,8 +1,10 @@
 """A round robot run by a disc of identical cells (cell.py), in a walled arena of red and blue blocks.
 
   - sensors sit evenly round the rim, each a red and a blue input cell either side of an actuator cell; a sensor sees
-    colour in the direction it faces (by cosine, fading with distance), and each tick its input cell is kicked
-    (v += KICK) with probability RATE x what it sees: sparse pulses, never levels
+    colour in the direction it faces (by cosine, fading with distance), and its input cell is kicked (v += KICK) at
+    random, at RATE x what it sees per unit time (a Poisson process): sparse pulses, never levels
+  - time: each tick is DT units of simulated time. Rates are per unit time and kicks, tastes and pushes are
+    instantaneous, so behaviour shouldn't depend on DT (1 = the tick the rules were evolved at)
   - each actuator is a thruster: each time its cell's v rises through cell.FIRE_LEVEL, the robot is pushed PUSH away
     from that side. So approaching what one side sees takes the far side's thruster: signals must cross the disc
   - touching a block eats it, and it is tasted: the taste cell of the sensor group facing it (one cell in from that
@@ -38,15 +40,20 @@ class World:
     size: float = 30.0          # the arena is size x size, walled
     radius: float = 2.0         # the robot's radius
     reach: float = 8.0          # how far a block's colour carries
-    rate: float = 0.05          # chance per tick of a sensor pulse at full intensity
+    rate: float = 0.05          # sensor pulses per unit time at full intensity
     push: float = 1.0           # how far one thruster firing moves the robot
     kick: float = 1.0           # how much a sensor pulse adds to v
     taste_contact: float = 1.0  # how much a taste adds to (or takes from) v where the block touched
     taste_centre: float = 0.0   # ... and in the middle of the disc
+    dt: float = 1.0             # simulated time per tick
 
     def array(self) -> np.ndarray:
         return np.array([self.size, self.radius, self.reach, self.rate, self.push, self.kick, self.taste_contact,
-                         self.taste_centre])
+                         self.taste_centre, self.dt])
+
+    def ticks(self, duration: float) -> int:
+        """How many ticks make up a duration of simulated time."""
+        return max(1, round(duration / self.dt))
 
 
 class Geometry:
@@ -111,7 +118,7 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
     """One tick of the robot and its world: from state, the next state is written into new (x is scratch). Mutates
     pos, blocks, counts (food eaten, poison eaten, thruster firings), high (actuator above FIRE_LEVEL) and fired
     (which actuators fired this tick)."""
-    size, radius, reach, rate, push, kick, contact, middle = w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]
+    size, radius, reach, rate, push, kick, contact, middle, dt = w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]
     for s in range(len(angles)):                               # senses
         fx, fy = math.cos(angles[s]), math.sin(angles[s])
         for colour in range(2):
@@ -121,10 +128,10 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
                     dx, dy = blocks[b, 0] - pos[0], blocks[b, 1] - pos[1]
                     d = math.sqrt(dx * dx + dy * dy) + 1e-9
                     seen += max(0.0, (fx * dx + fy * dy) / d) / (1 + (d / reach) ** 2)
-            if np.random.random() < rate * min(1.0, seen):
+            if np.random.random() < -math.expm1(-rate * min(1.0, seen) * dt):
                 i = inputs[s, colour]
                 state[0, i] = min(1.0, state[0, i] + kick)
-    cell.step(state, new, x, neighbours, weight, rule)
+    cell.step(state, new, x, neighbours, weight, rule, dt)
     for s in range(len(angles)):                               # actions
         now = new[0, outputs[s]] > cell.FIRE_LEVEL
         fired[s] = now and not high[s]
@@ -172,14 +179,14 @@ def live(rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, 
     return counts
 
 
-def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, ticks: int):
-    """A whole life in a fresh world: (per-half counts, as `live`; start position; final position; the blocks
-    at the start; the blocks at the end)."""
+def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, duration: float):
+    """A whole life of a duration of simulated time, in a fresh world: (per-half counts, as `live`; start position;
+    final position; the blocks at the start; the blocks at the end)."""
     pos, blocks = setup(task, seed_, food, world)
     start_pos, first = pos.copy(), blocks.copy()
     g = geometry
     counts = live(rule, g.sheet.neighbours, g.sheet.weight, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos,
-                  blocks, food, world.array(), ticks, seed_)
+                  blocks, food, world.array(), world.ticks(duration), seed_)
     return counts, start_pos, pos, first, blocks
 
 

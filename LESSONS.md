@@ -25,3 +25,9 @@ What we tried with the evolved cell rule, what worked, what didn't and why, so s
 - **Where the learner keeps its memory: in w, in the taste cells.** After a bad taste, the taste cell that was kicked lowers its w and holds it for the rest of the life; nothing else differs between food and poison lives. So the memory is local, where the taste arrived, and a side the robot hasn't bitten from hasn't learned.
 - **m wasn't used as memory or as a cell type.** It settles to about −0.47 in every cell within 200 ticks: a constant offset, which through the m·x terms shifts every coefficient alike. No differentiation into kinds of cell appeared; nothing asked for it.
 - **A taste does leave a lasting difference in a sheet that hasn't learned, but it's chaotic** (a changed oscillation), not a usable memory.
+- **The evolved rules depend on the tick size, so they aren't continuous-time systems.** With a time step dt (rates are per unit time, pulses a Poisson process), the approach rule and the learner work only at the dt they were evolved at (1). At dt 0.5 the sheet goes quiet (no thruster firing at all); at dt 2 approach eats 1.55 blocks instead of 2.6, and the learner barely eats. Their activity comes from overshoot at the coarse step, a subtler version of the flip-every-tick trick. Rules have to be evolved across tick sizes to rule this out.
+
+## Speed
+
+- **Cells as a list with neighbour lists, the rule applied one term at a time across all cells, no allocation per tick:** 3.6× faster in one process (17.5 → 5.0 ms per 2000-tick life), 2.4× on all 8 cores (185 → 448 lives per second). No swapping or major page faults in either version.
+- **All 8 cores give only 2.7× one core** (540 against 203 lives per second): each life costs 4.9 ms of CPU alone and 13.8 ms with 8 running. The Core Ultra 7 266V has 4 performance and 4 low-power cores and slows its clock under full load. More workers still help, less each time (4 workers: 461 lives per second).

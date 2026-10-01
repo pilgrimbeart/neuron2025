@@ -9,7 +9,7 @@
     from that side. So approaching what one side sees takes the far side's thruster: signals must cross the disc
   - touching a block eats it, and it is tasted: the taste cell of the sensor group facing it (one cell in from that
     group's actuator, beside both its input cells) is kicked by TASTE_CONTACT, and the middle four cells of the disc
-    by TASTE_CENTRE: up (v += taste) for food, down (v -= taste) for poison. The block reappears elsewhere. (The two
+    by TASTE_CENTRE, in their own variable t: up (t += taste) for food, down (t -= taste) for poison. The block reappears elsewhere. (The two
     taste strengths are body genes: evolution can choose where taste lands.)
   - tasks, shortest first: move (no blocks), approach (one block, which is food), taste (one red block, which is food
     if red is food and poison otherwise), choose (one red, one blue, one of them food), forage (several of each)
@@ -87,6 +87,8 @@ class Geometry:
         return out
 
 
+TASTE = cell.VARIABLES.index("t")      # the variable tastes kick
+
 NOISE = 0.1                     # every life starts with each cell variable uniform in -NOISE..NOISE
 
 
@@ -116,7 +118,8 @@ def _place(blocks, b, pos, w):
 def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
          high, fired, w):
     """One tick of the robot and its world: from state, the next state is written into new (x is scratch). Mutates
-    pos, blocks, counts (food eaten, poison eaten, thruster firings), high (actuator above FIRE_LEVEL) and fired
+    pos, blocks, counts (food eaten, poison eaten, thruster firings, cell spikes: any cell's v rising through
+    FIRE_LEVEL), high (actuator above FIRE_LEVEL) and fired
     (which actuators fired this tick)."""
     size, radius, reach, rate, push, kick, contact, middle, dt = w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]
     for s in range(len(angles)):                               # senses
@@ -132,6 +135,9 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
                 i = inputs[s, colour]
                 state[0, i] = min(1.0, state[0, i] + kick)
     cell.step(state, new, x, neighbours, weight, rule, dt)
+    for i in range(x.shape[1]):                                # spikes, for the cost of activity
+        if new[0, i] > cell.FIRE_LEVEL >= state[0, i]:
+            counts[3] += 1
     for s in range(len(angles)):                               # actions
         now = new[0, outputs[s]] > cell.FIRE_LEVEL
         fired[s] = now and not high[s]
@@ -154,21 +160,22 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
                     facing, best = s, along
             sign = 1.0 if good else -1.0
             i = taste[facing]
-            new[0, i] = min(1.0, max(-1.0, new[0, i] + sign * contact))
+            new[TASTE, i] = min(1.0, max(-1.0, new[TASTE, i] + sign * contact))
             for t in range(len(centre)):
                 i = centre[t]
-                new[0, i] = min(1.0, max(-1.0, new[0, i] + sign * middle))
+                new[TASTE, i] = min(1.0, max(-1.0, new[TASTE, i] + sign * middle))
             _place(blocks, b, pos, w)
 
 
 @njit(cache=True)
 def live(rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
-    """A whole life; returns (food, poison, firings) for each half of it, shape (2, 3). Moves pos and blocks."""
+    """A whole life; returns (food, poison, thruster firings, cell spikes) for each half of it, shape (2, 4). Moves
+    pos and blocks."""
     n = neighbours.shape[0]
     a = start(n, seed_)
     b = np.zeros_like(a)
     x = np.zeros((cell.N_INPUTS, n))
-    counts = np.zeros((2, 3), dtype=np.int64)
+    counts = np.zeros((2, 4), dtype=np.int64)
     high = np.zeros(len(angles), dtype=np.bool_)
     fired = np.zeros(len(angles), dtype=np.bool_)
     for t in range(ticks):
@@ -220,7 +227,7 @@ class Robot:
         self.state = start(g.sheet.n, seed_)
         self.new = np.zeros_like(self.state)
         self.x = np.zeros((cell.N_INPUTS, g.sheet.n))
-        self.counts = np.zeros(3, dtype=np.int64)
+        self.counts = np.zeros(4, dtype=np.int64)
         self.high = np.zeros(len(g.angles), dtype=np.bool_)
         self.fired = np.zeros(len(g.angles), dtype=np.bool_)
         self.fired_at = np.full(len(g.angles), -1e9)

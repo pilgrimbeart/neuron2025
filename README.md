@@ -9,12 +9,13 @@ The cell rule is **evolved**. It was first designed by hand: an excitable medium
 
 ## The cell (`cell.py`)
 
-Each cell holds three numbers, each kept within −1..1:
-- **v:** fast. Sensor pulses and tastes kick it, and an actuator fires when its v rises through 0.5.
+Each cell holds four numbers, each kept within −1..1:
+- **v:** fast. Sensor pulses kick it, and an actuator fires when its v rises through 0.5.
 - **w:** fast, free for evolution to use, e.g. as recovery.
 - **m:** ten times slower, free to use as memory.
+- **t:** fast. Only tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike.
 
-Every tick, each variable moves by its rate (0.1, 0.1, 0.01) times a quadratic polynomial of the cell's own variables and the mean of each over its neighbours (up to 8). A rule is those polynomials' coefficients (84 of them). The aim is for most to end up zero, so that the rule can be said in a sentence or two (`cell.describe`).
+Every tick, each variable moves by its rate (0.1, 0.1, 0.01, 0.1) × dt times a quadratic polynomial of the cell's own variables and the mean of each over its neighbours (up to 8). dt is the simulated time per tick (`World.dt`, 1 by default). A rule is those polynomials' coefficients (180 of them). The aim is for most to end up zero, so that the rule can be said in a sentence or two (`cell.describe`).
 
 A cell knows only its own variables and its neighbours'. The sheet is a list of cells with neighbour lists, and the body decides who neighbours whom.
 
@@ -24,7 +25,7 @@ A cell knows only its own variables and its neighbours'. The sheet is a list of 
 - **Six sensor groups** sit round the rim, each a red and a blue input cell with a thruster between them.
 - **Sensing:** a sensor sees colour in the direction it faces, fading with distance. Each tick its input cell is kicked with a probability that rises with what it sees: sparse pulses, never levels.
 - **Moving:** each thruster pushes the robot away from its own side as its v rises through 0.5. So approaching what one side sees needs the far side's thruster, and signals must cross the disc.
-- **Eating:** touching a block eats it. Taste kicks the cell beside the sensor group that touched it, and the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
+- **Eating:** touching a block eats it. Taste kicks t in the cell beside the sensor group that touched it, and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
 
 Tasks, shortest first:
 
@@ -45,26 +46,31 @@ python evolve.py taste 800 --from kernels/approach.json --sigma 0.02 --sigma-m 0
 python mapelites.py 8 --task taste            # 8 hours; --resume to continue
 ```
 
+Both score every candidate at two tick sizes (dt 1 and 0.5) and take the worse, so that no rule can rely on the tick size, and they validate at 0.25 as well. Both charge for activity: each thruster firing, and the sheet's spike rate above one spike per cell per 100 units of time, so sparse activity is favoured.
+
 - **`evolve.py`** climbs one hill with CMA-ES. Each generation it scores the rule at the search's mean on fixed validation worlds, and saves it to `kernels/TASK.json` whenever it beats the best so far.
 - **`mapelites.py`** searches widely. It keeps the best rule for each kind of behaviour (meals per life, and how eating food and eating poison change during a life), so stepping stones towards learning survive even when they score below "eat everything". It writes these files, and overwrites them as it goes:
   - `kernels/map_TASK.pkl`: the archive;
   - `kernels/map_TASK.json`: the best-scoring rule;
   - `kernels/map_TASK_learner.json`: the best learner on its own worlds;
-  - `kernels/map_TASK_validated.json`: the best learner that also learns on fresh worlds.
+  - `kernels/map_TASK_validated.json`: the best learner that also learns on fresh worlds, at every tick size.
+
+  `--seed` adds saved rules to the first batches: kernels (with small variations) or a whole archive (`.pkl`).
 
 Rules in `kernels/`:
 
 | File | What it is |
 |---|---|
-| `move.json`, `approach.json` | the move and approach rules; approach eats about 2.6 blocks per life |
-| `approach_vw.json` | the approach rule as evolved, before m existed |
-| `taste_learner.json` | the first rule that learns (the taste task), fixed as a reference |
+| `move.json`, `approach.json` | the move and approach rules, at every tick size; approach eats about 3 blocks per life |
+| `robust_learner.json` | the first rule that learns the taste task at every tick size; dense (travelling waves, about 6 spikes per cell per 100) |
+| `sparse_robust_learner.json` | the best so far: learns the taste task at every tick size, sparsely (about 2.6 spikes per cell per 100; pulse trains rather than broad waves) |
+| `dense_scorer.json` | the best taste score before activity was charged for |
 | `map_taste*.json` | outputs of the latest MAP-Elites run |
 
 ## Watching (`app.py`)
 
 ```bash
-python app.py taste_learner -c "task taste" -c "speed 3"
+python app.py sparse_robust_learner -c "task taste" -c "view t" -c "speed 4"
 ```
 
 The screen is in four quarters:
@@ -73,25 +79,21 @@ The screen is in four quarters:
 - **Bottom-left:** each thruster's v over time.
 - **Bottom-right:** the console. Commands can also be written to `control_in.txt`, and output goes to `control_out.log`.
 
-Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `restart`, `speed N`, `pause`, `resume`, `view m|w`, `rule`, `quit`.
+Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `view m|w|t`, `rule`, `quit`. The world panel shows meals, thruster firings and spikes per cell per 100 units of time.
 
 ## Where things stand
 
-- **Works:** move and approach evolve in minutes.
-- **Learns, via MAP-Elites:** the taste task. On fresh worlds, poison is eaten 85% less in the second half of a life, while food is eaten more, and the robot keeps away from poison rather than freezing. The memory is the w of the taste cell that received the bad taste. So it is local: only the side that bit has learned.
-- **Not yet:** choose, which needs colour-specific learning ("red is bad, blue is good"), and forage.
-- **But the evolved rules depend on the tick size.** At half the tick (`World.dt` 0.5) the sheet goes quiet, and at double it they fail. Their activity is overshoot at the coarse step, not continuous-time dynamics (`LESSONS.md`). So every rule so far needs re-evolving across tick sizes.
+- **Works:** move and approach evolve in minutes, at every tick size.
+- **Learns, via MAP-Elites:** the taste task, at every tick size, and sparsely. With the best rule (`sparse_robust_learner.json`), the first taste decides it: after poison it stays away, after food it keeps eating. Two things made that possible: giving taste its own variable t, and scoring at more than one tick size. Charging for activity turned the broad travelling waves into something closer to pulse trains.
+- **Not yet:** choose and forage. The taste learner can't tell colours apart: in forage it eats both alike and less of both over time, because in the taste task there was only ever one colour.
 
 ## Next steps
 
-1. **Evolve across tick sizes:** live every candidate at more than one `dt`, so that no rule can rely on the step.
-2. **Choose:** run MAP-Elites on choose, seeded with the taste run's archive.
-3. **Organism-wide memory:** spread what one side learned to the others, e.g. through centre cells.
-4. **A cell "type" variable,** set early in life and then fixed, if a task needs cells with different jobs.
-5. **Make rules describable:** penalise m (so it rests at 0 unless something is learned), then prune terms one by one while the score holds.
-6. **Speed:**
-   - Stepping cells from neighbour lists, one term at a time, made lives 3.6× faster in one process and 2.4× on all 8 cores (`LESSONS.md`). All 8 cores give only 2.7× one core, because the chip slows under full load.
-   - The laptop's Intel Arc GPU is visible to WSL (`/dev/dxg`). Using it would need Intel's compute runtime and PyTorch's Intel GPU backend, and a batched rewrite of the simulation.
+1. **Choose:** MAP-Elites on choose, seeded with the taste run's archive (`--seed kernels/map_taste.pkl`).
+2. **Organism-wide memory:** spread what one side learned to the others.
+3. **Make rules describable:** prune terms one by one while the score holds.
+4. **Parked, in git history:** a fuller cell (each neighbour's variables as separate inputs, every product of two inputs: 2,812 coefficients), a sheet that grows from one central cell along a square spiral, and an untested PyTorch version of the simulation for running many lives at once on a GPU. It is the commit "Parked: ..." just before "Revert ...": `git revert` the revert to bring it back.
+5. **Speed:** this laptop manages about 500 lives per second on 8 cores. Renting a GPU only pays once the simulation is batched (the parked PyTorch version).
 
 ## Requirements
 

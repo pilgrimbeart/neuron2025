@@ -2,12 +2,15 @@
 
     python evolve.py TASK [GENERATIONS] [--from KERNEL] [--sparsity S] [--sigma SIGMA] [--sigma-m SIGMA_M]
 
-Each generation, every candidate rule lives LIVES lives in fresh random worlds; the fitness is the task's score minus
-S x the sum of the rule's absolute coefficients (so rules stay short enough to say). The rule of the search's mean
-is scored on fixed validation worlds each generation, and whenever it beats the best so far it is saved to
-kernels/TASK.json.
+Each generation, every candidate rule lives LIVES lives in fresh random worlds, at each tick size in DTS; the fitness
+is the worse of its task scores over the tick sizes (so no rule can rely on the tick size), minus S x the sum of the
+rule's absolute coefficients (so rules stay short enough to say). The rule of the search's mean is scored the same
+way on fixed validation worlds each generation, also at the finer tick sizes in CHECK_DTS, and whenever it beats the
+best so far it is saved to kernels/TASK.json.
 
-Fitness per task (averaged over lives), less FIRE_COST per thruster firing (so quiet, sparse activity is favoured):
+Fitness per task (averaged over lives), less the cost of activity (`cost`): FIRE_COST per thruster firing, and
+ACTIVITY x how far the sheet's spike rate (spikes per cell per unit time) is above SPARSE_RATE. Sparse activity is
+free; a wave through every cell is not:
   move      how far the robot ends from where it started, in robot radii
   approach  blocks eaten, plus how much nearer the one it is heading for it ended than it started (0..1)
   taste     for each world, lived once with its one (red) block as food and once as poison: the sum of the two
@@ -25,6 +28,7 @@ this, and a rule that learns even a little scores above it, so the search can fi
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 from multiprocessing import Pool
@@ -39,21 +43,33 @@ DURATION = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forag
 LIVES = 16
 POISON = 0.5
 FIRE_COST = 0.001
+ACTIVITY = 30.0
+SPARSE_RATE = 0.01
 LEARN = 2.0
 VALIDATION = 64
+DTS = (1.0, 0.5)                # tick sizes every candidate lives at
+CHECK_DTS = (1.0, 0.5, 0.25)    # ... and validation, finer still
 POPULATION = 32
 KERNELS = Path("kernels")
 
 _geometry = None
 
 
-def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False, world: robot.World = robot.World()):
-    """The task's score for one life, less the firing cost; with halves, also the (food, poison) eaten in each half."""
+def geometry() -> robot.Geometry:
+    """The robot's body, built once per process."""
     global _geometry
     if _geometry is None:
         _geometry = robot.Geometry()
-    per_half, start, pos, first, blocks = robot.lifetime(rule, _geometry, task, seed, food, world, DURATION[task])
-    food_eaten, poison, firings = per_half.sum(axis=0)
+    return _geometry
+
+
+def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False, world: robot.World = robot.World(),
+         dt: float = 1.0):
+    """The task's score for one life at tick size dt, less the cost of activity; with halves, also the (food, poison)
+    eaten in each half."""
+    world = dataclasses.replace(world, dt=dt)
+    per_half, start, pos, first, blocks = robot.lifetime(rule, geometry(), task, seed, food, world, DURATION[task])
+    food_eaten, poison = per_half[:, :2].sum(axis=0)
     if task == "move":
         value = float(np.hypot(*(pos - start))) / world.radius
     elif task == "approach":
@@ -64,16 +80,33 @@ def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False
         value = float(food_eaten) + max(0.0, 1.0 - distance / reference)
     else:
         value = float(food_eaten - POISON * poison)
-    value -= FIRE_COST * firings
+    value -= cost(per_half, geometry().sheet.n, DURATION[task])
     return (value, per_half[:, :2]) if halves else value
 
 
-def score(rule: np.ndarray, task: str, seeds) -> float:
+def cost(per_half, cells: int, duration: float) -> float:
+    """The cost of a life's activity: its thruster firings, and its spike rate (per cell per unit of simulated time,
+    so the same at any tick size) above SPARSE_RATE."""
+    return FIRE_COST * per_half[:, 2].sum() + ACTIVITY * max(0.0, spike_rate(per_half, cells, duration) - SPARSE_RATE)
+
+
+def spike_rate(per_half, cells: int, duration: float) -> float:
+    """Spikes per cell per unit of simulated time."""
+    return per_half[:, 3].sum() / (cells * duration)
+
+
+def score(rule: np.ndarray, task: str, seeds, dts=DTS) -> float:
+    """The task's score: the worse over the tick sizes of the mean over the worlds."""
+    return min(score_at(rule, task, seeds, dt) for dt in dts)
+
+
+def score_at(rule: np.ndarray, task: str, seeds, dt: float) -> float:
     if task in ("move", "approach"):
-        return float(np.mean([life(rule, task, s, s % 2) for s in seeds]))
+        return float(np.mean([life(rule, task, s, s % 2, dt=dt) for s in seeds]))
     total = 0.0
     for s in seeds:
-        (a, halves_a), (b, halves_b) = (life(rule, task, s, food, halves=True) for food in (robot.RED, robot.BLUE))
+        (a, halves_a), (b, halves_b) = (life(rule, task, s, food, halves=True, dt=dt)
+                                        for food in (robot.RED, robot.BLUE))
         total += a + b if task == "taste" else min(a, b)
         (f1, p1), (f2, p2) = halves_a + halves_b
         if f1 + p1 and f2 + p2:
@@ -116,7 +149,9 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
             fitness = pool.map(_job, [(np.asarray(c), task, seeds, sparsity) for c in candidates])
             es.tell(candidates, [-f for f in fitness])
             mean = np.asarray(es.mean)
-            valid = float(np.mean(pool.map(_score_one, [(mean, task, [s]) for s in validation])))
+            jobs = [(mean, task, s, dt) for dt in CHECK_DTS for s in validation]
+            per = np.array(pool.map(_score_one, jobs)).reshape(len(CHECK_DTS), len(validation)).mean(axis=1)
+            valid = float(per.min())
             learning = ""
             if task in ("taste", "choose", "forage"):
                 eaten = np.sum(pool.map(_halves, [(mean, task, s) for s in validation]), axis=0)
@@ -126,10 +161,11 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
             if valid > best:
                 best = valid
                 (KERNELS / f"{task}.json").write_text(json.dumps(
-                    {"task": task, "generation": generation, "validation": valid, "variables": cell.VARIABLES,
+                    {"task": task, "generation": generation, "validation": valid,
+                     "validation_by_dt": dict(zip(map(str, CHECK_DTS), per.tolist())), "variables": cell.VARIABLES,
                      "rule": mean.tolist()}, indent=1))
             print(f"gen {generation:4d}  fitness best {max(fitness):7.3f} mean {np.mean(fitness):7.3f}  "
-                  f"validation {valid:7.3f} (best {best:.3f})  sigma {es.sigma:.3f}  |rule| {np.abs(mean).sum():.2f}{learning}",
+                  f"validation {valid:7.3f} (by dt {' '.join(f'{v:.2f}' for v in per)}; best {best:.3f})  sigma {es.sigma:.3f}  |rule| {np.abs(mean).sum():.2f}{learning}",
                   flush=True)
 
 
@@ -140,8 +176,8 @@ def _halves(args):
 
 
 def _score_one(args):
-    rule, task, seeds = args
-    return score(rule, task, seeds)
+    rule, task, seed, dt = args
+    return score_at(rule, task, [seed], dt)
 
 
 def load(path) -> np.ndarray:

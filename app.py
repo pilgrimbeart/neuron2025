@@ -10,6 +10,7 @@ console or written to control_in.txt; output also goes to control_out.log.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -26,10 +27,11 @@ HELP = """commands:
   task NAME           move, approach, taste, choose or forage, and restart
   food red|blue       which colour is food, and restart (in taste, the one block is red: food or poison)
   seed N              the world's seed, and restart
+  dt X                simulated time per tick (1 = as evolved), and restart
   restart             a new life with the same settings
   speed N             ticks per frame (1..50)
   pause / resume
-  view m|w            which variable shows in blue on the cells
+  view m|w|t          which variable shows in blue on the cells
   rule                print the rule
   quit"""
 TICKS_PER_S = 10            # at speed 1
@@ -43,7 +45,7 @@ class App:
         self.font = pygame.font.Font(pygame.font.match_font("couriernew"), 16)
         self.lines: list[str] = []
         self.input = ""
-        self.kernel, self.task, self.food, self.seed = kernel, "choose", robot.RED, 0
+        self.kernel, self.task, self.food, self.seed, self.dt = kernel, "choose", robot.RED, 0, 1.0
         self.speed, self.paused, self.running = 1, False, True
         self.blue = "m"
         self.log = open(CONTROL_OUT, "a", buffering=1)
@@ -78,6 +80,10 @@ class App:
             elif name == "seed":
                 self.seed = int(args[0])
                 self.restart()
+            elif name == "dt":
+                self.dt = float(args[0])
+                assert self.dt > 0
+                self.restart()
             elif name == "restart":
                 self.restart()
             elif name == "speed":
@@ -98,10 +104,11 @@ class App:
 
     def restart(self) -> None:
         path = Path(self.kernel) if Path(self.kernel).exists() else evolve.KERNELS / f"{self.kernel}.json"
-        self.robot = robot.Robot(evolve.load(path), self.task, self.seed, self.food, world=evolve.load_world(path))
+        world = dataclasses.replace(evolve.load_world(path), dt=self.dt)
+        self.robot = robot.Robot(evolve.load(path), self.task, self.seed, self.food, world=world)
         self.trace = []
         self.say(f"kernel {path.stem}, task {self.task}, {'red' if self.food == robot.RED else 'blue'} is food, "
-                 f"seed {self.seed}")
+                 f"seed {self.seed}, dt {self.dt}")
 
     # --- drawing ---------------------------------------------------------------------------------------------------
 
@@ -144,9 +151,10 @@ class App:
             c, sn = np.cos(angle), np.sin(angle)
             pygame.draw.circle(self.screen, (255, 255, 0) if lit else (70, 70, 0),
                                (centre[0] + c * radius * 0.75, centre[1] + sn * radius * 0.75), 5 if lit else 2)
-        food, poison, firings = r.counts
+        food, poison, firings, spikes = r.counts
+        rate = 100 * spikes / max(1, r.geometry.sheet.n * r.ticks * r.world.dt)
         text = [f"tick {r.ticks}  task {self.task}  {'red' if r.food == robot.RED else 'blue'} is food (ringed)",
-                f"ate {food} food, {poison} poison; {firings} thruster firings"]
+                f"ate {food} food, {poison} poison; {firings} thruster firings; {rate:.1f} spikes per cell per 100"]
         for i, line in enumerate(text):
             self.screen.blit(self.font.render(line, True, (255, 255, 255)), (x0 + 10, y0 + 8 + 20 * i))
 

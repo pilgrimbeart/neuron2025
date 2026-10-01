@@ -1,7 +1,8 @@
 """How a cell behaves: the whole of it. Every cell runs the same rule, and the rule is what evolution finds.
 
-Each cell holds a few numbers, VARIABLES, each kept within -1..1: v (fast; an actuator fires when it rises through
-FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery) and m (slow, free to use as memory). Every tick,
+Each cell holds a few numbers, VARIABLES, each kept within -1..1: v (fast; sensor pulses kick it, and an actuator
+fires when it rises through FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery), m (slow, free to use
+as memory) and t (fast; tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike). Every tick,
 every cell looks at its own variables and the mean of each over its neighbours (nv, nw, nm), and each variable x
 changes by
 
@@ -16,7 +17,7 @@ rule that is a genuine continuous-time system behaves much the same at half or d
 A cell knows nothing of where it is: only its own variables and its neighbours'. The sheet is a list of cells, each
 with up to 8 neighbours (`neighbours`); the body decides who neighbours whom.
 
-Everything outside the cell is a kick to v: a sensor pulse, or a taste.
+Everything outside the cell is a kick: a sensor pulse to v, a taste to t.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from __future__ import annotations
 import numpy as np
 from numba import njit
 
-VARIABLES = ("v", "w", "m")
-RATES = np.array([0.1, 0.1, 0.01])
+VARIABLES = ("v", "w", "m", "t")
+RATES = np.array([0.1, 0.1, 0.01, 0.1])
 K = len(VARIABLES)
 N_INPUTS = 2 * K
 N_TERMS = 1 + N_INPUTS + N_INPUTS * (N_INPUTS + 1) // 2

@@ -1,25 +1,32 @@
 """MAP-Elites: a wide search for a cell rule that learns, keeping the best rule for each kind of behaviour rather
 than only the best rule.
 
-    python mapelites.py [HOURS] [--task taste|choose] [--resume]
+    python mapelites.py [HOURS] [--task taste|choose] [--resume] [--seed KERNEL...]
 
 A genome is a rule (cell.py) and two body genes: how strongly a taste kicks the cell where the block touched and
 the middle of the disc (robot.World.taste_contact, taste_centre; 0..TASTE_MAX). Each genome lives in WORLDS fixed
 worlds, each once with red as food and once with blue (in taste, the one red block is food, then poison), so every
-evaluation is deterministic and an elite can't hold its place by luck.
+evaluation is deterministic and an elite can't hold its place by luck; and it lives them at each tick size in
+evolve.DTS, scoring the worse, so that no rule can rely on the tick size.
 
 Behaviour, 3 axes of BINS bins each:
   meals     meals per life, 0..MAX_MEALS
   food      how eating food changes from the first half of a life to the second, (F2 - F1) / (F1 + F2 + 2)
   poison    the same for poison, (P2 - P1) / (P1 + P2 + 2)
-A learner sits where poison falls and food doesn't; eating everything, in the middle. Within a cell the higher score
+A learner sits where poison falls and food doesn't; eating everything, in the middle. The log's "spikes" is the
+sheet's spikes per cell per 100 units of time (activity above evolve.SPARSE_RATE costs score). Within a cell the higher score
 wins, scored as in evolve.py, except that learning (the rise in food share from the first half of lives to the
 second) only counts when both halves have at least MIN_MEALS meals per life, so that stopping eating can't pass for
 learning. Offspring: a random elite, mutated at a random scale, or crossed with another along the line between them.
 
+--seed adds saved rules to the first batches: a kernel (.json, with its body genes) with SEED_VARIANTS small
+variations, or every elite of another search's archive (.pkl). A way to bring in rules from another search, such as
+one on an easier task.
+
 The archive is saved to kernels/map_TASK.pkl, the best-scoring elite to kernels/map_TASK.json and the best learner to
 kernels/map_TASK_learner.json. Fixed worlds let flukes in, so every VALIDATE_EVERY batches the best learner is lived
-again in VALIDATION fresh worlds; one that learns there too is saved to kernels/map_TASK_validated.json.
+again in VALIDATION fresh worlds, at each tick size in evolve.CHECK_DTS (finer still); one that learns there too, at
+every one of them, is saved to kernels/map_TASK_validated.json.
 """
 
 from __future__ import annotations
@@ -47,38 +54,42 @@ CHANGE = 0.6                # the food and poison axes span -CHANGE..CHANGE
 TASTE_MAX = 1.5
 BATCH = 64
 INITIAL = 256
+SEED_VARIANTS = 7
+SEED_SPREAD = 0.02
 N_GENES = cell.N_PARAMS + 2
 
-_geometry = None
 
 
 def evaluate(args):
-    """(score, behaviour (meals, food change, poison change), learning, meals per life, halves) for a genome, where
-    halves is the (food, poison) eaten in the first and second halves of its lives."""
-    genome, task, worlds = args
-    global _geometry
-    if _geometry is None:
-        _geometry = robot.Geometry()
+    """(score, behaviour (meals, food change, poison change), learning, meals per life, halves, spike rate) for a
+    genome, lived at
+    each tick size in dts. Score and learning are the worse over the tick sizes (so no rule can rely on the tick
+    size); behaviour and meals are pooled over them; halves is, for each tick size, the (food, poison) eaten in the
+    first and second halves of its lives, shape (len(dts), 2, 2); spike rate is spikes per cell per unit time."""
+    genome, task, worlds, dts = args
+    g = evolve.geometry()
     rule = genome[:cell.N_PARAMS]
-    world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]))
-    halves = np.zeros((2, 2))                   # (first, second half) x (food, poison)
-    firings = 0
-    total = 0.0
-    for s in worlds:
-        values = []
-        for food in (robot.RED, robot.BLUE):
-            per_half = robot.lifetime(rule, _geometry, task, s, food, world, evolve.DURATION[task])[0]
-            halves += per_half[:, :2]
-            firings += per_half[:, 2].sum()
-            f, p = per_half[:, 0].sum(), per_half[:, 1].sum()
-            values.append(f - evolve.POISON * p - evolve.FIRE_COST * per_half[:, 2].sum())
-        total += sum(values) if task == "taste" else min(values)
-    learning = learned(halves, 2 * len(worlds))
-    score = total / len(worlds) + evolve.LEARN * learning
-    (f1, p1), (f2, p2) = halves
-    meals = halves.sum() / (2 * len(worlds))
+    lives = 2 * len(worlds)
+    halves = np.zeros((len(dts), 2, 2))         # tick size x (first, second half) x (food, poison)
+    scores, learnings, rates = [], [], []
+    for d, dt in enumerate(dts):
+        world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]), dt=dt)
+        total = 0.0
+        for s in worlds:
+            values = []
+            for food in (robot.RED, robot.BLUE):
+                per_half = robot.lifetime(rule, g, task, s, food, world, evolve.DURATION[task])[0]
+                halves[d] += per_half[:, :2]
+                f, p = per_half[:, 0].sum(), per_half[:, 1].sum()
+                values.append(f - evolve.POISON * p - evolve.cost(per_half, g.sheet.n, evolve.DURATION[task]))
+                rates.append(evolve.spike_rate(per_half, g.sheet.n, evolve.DURATION[task]))
+            total += sum(values) if task == "taste" else min(values)
+        learnings.append(learned(halves[d], lives))
+        scores.append(total / len(worlds) + evolve.LEARN * learnings[-1])
+    (f1, p1), (f2, p2) = halves.sum(axis=0)
+    meals = halves.sum() / (lives * len(dts))
     behaviour = (meals, (f2 - f1) / (f1 + f2 + 2), (p2 - p1) / (p1 + p2 + 2))
-    return score, behaviour, learning, meals, halves
+    return min(scores), behaviour, min(learnings), meals, halves, float(np.mean(rates))
 
 
 def learned(halves, lives: int) -> float:
@@ -127,12 +138,32 @@ def save_rule(path: Path, task: str, elite: dict) -> None:
     genome = elite["genome"]
     path.write_text(json.dumps({
         "task": task, "score": elite["score"], "learning": elite["learning"], "meals": elite["meals"],
+        "spikes_per_cell_per_100": 100 * elite["spikes"],
         "validated": elite.get("validated"),
         "variables": cell.VARIABLES, "rule": genome[:cell.N_PARAMS].tolist(),
         "body": {"taste_contact": float(genome[-2]), "taste_centre": float(genome[-1])}}, indent=1))
 
 
-def run(hours: float, task: str, resume: bool) -> None:
+def from_kernels(paths, rng) -> list[np.ndarray]:
+    """Saved rules as genomes: each kernel with SEED_VARIANTS small variations of its rule, and every elite of an
+    archive."""
+    genomes = []
+    for path in paths:
+        if str(path).endswith(".pkl"):
+            archive, _ = pickle.loads(Path(path).read_bytes())
+            genomes += [elite["genome"].copy() for elite in archive.values()]
+            continue
+        body = evolve.load_world(path)
+        genome = np.r_[evolve.load(path), body.taste_contact, body.taste_centre]
+        genomes.append(genome)
+        for _ in range(SEED_VARIANTS):
+            variant = genome.copy()
+            variant[:cell.N_PARAMS] += rng.normal(0, SEED_SPREAD, cell.N_PARAMS)
+            genomes.append(variant)
+    return genomes
+
+
+def run(hours: float, task: str, resume: bool, seeds=()) -> None:
     evolve.KERNELS.mkdir(exist_ok=True)
     store = evolve.KERNELS / f"map_{task}.pkl"
     archive, evaluations = {}, 0
@@ -143,6 +174,7 @@ def run(hours: float, task: str, resume: bool) -> None:
     started = time.time()
     batches = 0
     validated = -1.0
+    extra = from_kernels(seeds, rng)
     with Pool() as pool:
         while time.time() < deadline:
             if evaluations < INITIAL:
@@ -150,20 +182,23 @@ def run(hours: float, task: str, resume: bool) -> None:
                 genomes += [random_genome(rng) for _ in range(BATCH - len(genomes))]
             else:
                 genomes = [offspring(archive, rng) for _ in range(BATCH)]
-            for genome, (score, behaviour, learning, meals, _halves) in zip(
-                    genomes, pool.map(evaluate, [(g_, task, WORLDS) for g_ in genomes])):
+            if extra:
+                genomes, extra = extra[:BATCH] + genomes[len(extra[:BATCH]):], extra[BATCH:]
+            for genome, (score, behaviour, learning, meals, _halves, rate) in zip(
+                    genomes, pool.map(evaluate, [(g_, task, WORLDS, evolve.DTS) for g_ in genomes])):
                 key = niche(behaviour)
                 if key not in archive or score > archive[key]["score"]:
                     archive[key] = {"genome": genome, "score": score, "behaviour": behaviour,
-                                    "learning": learning, "meals": meals}
+                                    "learning": learning, "meals": meals, "spikes": rate}
             evaluations += len(genomes)
             batches += 1
             best = max(archive.values(), key=lambda e: e["score"])
             learner = max(archive.values(), key=lambda e: e["learning"])
             if batches % VALIDATE_EVERY == 0 and learner["learning"] > 0:
                 chunks = [VALIDATION[i::8] for i in range(8)]
-                results = pool.map(evaluate, [(learner["genome"], task, c) for c in chunks])
-                fresh = learned(sum(r[4] for r in results), 2 * len(VALIDATION))
+                results = pool.map(evaluate, [(learner["genome"], task, c, evolve.CHECK_DTS) for c in chunks])
+                pooled = sum(r[4] for r in results)
+                fresh = min(learned(h, 2 * len(VALIDATION)) for h in pooled)
                 print(f"    validating the best learner ({learner['learning']:+.2f} on the fixed worlds): "
                       f"{fresh:+.2f} on fresh worlds", flush=True)
                 if fresh > validated:
@@ -175,9 +210,10 @@ def run(hours: float, task: str, resume: bool) -> None:
                 save_rule(evolve.KERNELS / f"map_{task}_learner.json", task, learner)
                 print(f"{(time.time() - started) / 60:6.1f} min  {evaluations:7d} evaluations  "
                       f"{len(archive):3d}/{BINS ** 3} niches  best score {best['score']:6.2f} "
-                      f"(meals {best['meals']:.1f}, learning {best['learning']:+.2f})  "
+                      f"(meals {best['meals']:.1f}, learning {best['learning']:+.2f}, spikes {100 * best['spikes']:.1f})  "
                       f"best learner {learner['learning']:+.2f} (meals {learner['meals']:.1f}, score "
-                      f"{learner['score']:.2f})  best validated {validated:+.2f}", flush=True)
+                      f"{learner['score']:.2f}, spikes {100 * learner['spikes']:.1f})  best validated {validated:+.2f}",
+                      flush=True)
 
 
 if __name__ == "__main__":
@@ -185,5 +221,6 @@ if __name__ == "__main__":
     parser.add_argument("hours", type=float, nargs="?", default=8.0)
     parser.add_argument("--task", choices=("taste", "choose"), default="taste")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--seed", nargs="+", default=[], help="saved rules to add to the first batch")
     args = parser.parse_args()
-    run(args.hours, args.task, args.resume)
+    run(args.hours, args.task, args.resume, args.seed)

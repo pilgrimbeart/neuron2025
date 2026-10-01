@@ -2,20 +2,21 @@
 
 Each cell holds a few numbers, VARIABLES, each kept within -1..1: v (fast; sensor pulses kick it, and an actuator
 fires when it rises through FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery), m (slow, free to use
-as memory) and t (fast; tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike). Every tick,
-every cell looks at its own variables and the mean of each over its neighbours (nv, nw, nm), and each variable x
-changes by
+as memory) and t (fast; tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike).
+
+Every tick, every cell looks at its own variables and at each variable of each of its 8 neighbours separately, in
+compass order (DIRECTIONS); a missing neighbour (at the edge, or not yet born) reads as 0. Each variable x changes by
 
     x += RATE[x] x dt x (sum of TERMS weighted by the rule's coefficients for x)
 
-where TERMS are 1, the inputs, and their pairwise products and squares. A rule is those coefficients; most should be
-zero, so that the rule can be said in a sentence or two (`describe`). Small rates make the rule an equation of
-motion (like FitzHugh-Nagumo's): a cell can't flip every tick, so firing has to be a real excursion and recovery;
-m's rate is ten times slower still. dt is the simulated time per tick (1 = the tick the rules were evolved at); a
-rule that is a genuine continuous-time system behaves much the same at half or double it.
+where TERMS are 1, the inputs, and every product of two inputs (squares included). A rule is those coefficients;
+most should be zero, so that the rule can be said in a few sentences (`describe`). Small rates make the rule an
+equation of motion (like FitzHugh-Nagumo's): a cell can't flip every tick, so firing has to be a real excursion and
+recovery; m's rate is ten times slower still. dt is the simulated time per tick; a rule that is a genuine
+continuous-time system behaves much the same at any small dt.
 
 A cell knows nothing of where it is: only its own variables and its neighbours'. The sheet is a list of cells, each
-with up to 8 neighbours (`neighbours`); the body decides who neighbours whom.
+with its neighbour in each direction (`Sheet`); the body decides who neighbours whom.
 
 Everything outside the cell is a kick: a sensor pulse to v, a taste to t.
 """
@@ -27,49 +28,42 @@ from numba import njit
 
 VARIABLES = ("v", "w", "m", "t")
 RATES = np.array([0.1, 0.1, 0.01, 0.1])
+DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+OFFSETS = ((0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1))   # (dx, dy); y grows downwards
 K = len(VARIABLES)
-N_INPUTS = 2 * K
-N_TERMS = 1 + N_INPUTS + N_INPUTS * (N_INPUTS + 1) // 2
-N_PARAMS = K * N_TERMS           # the coefficients for v, then w, then m
+INPUTS = VARIABLES + tuple(f"{x}_{d}" for d in DIRECTIONS for x in VARIABLES)
+N_INPUTS = len(INPUTS)                                        # 36
+TERMS = ("1",) + INPUTS + tuple(f"{a}*{b}" if a != b else f"{a}^2"
+                                for i, a in enumerate(INPUTS) for b in INPUTS[i:])
+N_TERMS = len(TERMS)                                          # 703
+N_PARAMS = K * N_TERMS                                        # the coefficients for each variable in turn
 FIRE_LEVEL = 0.5
-MAX_NEIGHBOURS = 8
-
-
-def terms(variables: tuple[str, ...]) -> tuple[str, ...]:
-    inputs = variables + tuple("n" + x for x in variables)
-    return ("1",) + inputs + tuple(f"{a}*{b}" if a != b else f"{a}^2"
-                                   for i, a in enumerate(inputs) for b in inputs[i:])
-
-
-TERMS = terms(VARIABLES)
+assert K == 4, "step's product loop is written out for 4 variables"
 
 
 class Sheet:
-    """Who neighbours whom, and the working space for stepping a sheet of n cells. A state is (K, n + 1): the
-    cells' variables, then a slot that is always zero, where a missing neighbour points."""
+    """Who neighbours whom: for n cells, neighbours[i, d] is cell i's neighbour in direction d, or n (a slot that is
+    always 0) if it has none. A state is (K, n + 1)."""
 
-    def __init__(self, neighbours: list[list[int]]):
+    def __init__(self, neighbours: list[list[int | None]]):
         n = len(neighbours)
         self.n = n
-        self.neighbours = np.full((n, MAX_NEIGHBOURS), n, dtype=np.int64)
-        self.weight = np.zeros(n)
-        for i, ns in enumerate(neighbours):
-            self.neighbours[i, :len(ns)] = ns
-            self.weight[i] = 1.0 / len(ns) if ns else 0.0
+        self.neighbours = np.array([[n if j is None else j for j in ns] for ns in neighbours], dtype=np.int64)
 
 
 @njit(cache=True, fastmath=True)
-def step(state, out, x, neighbours, weight, rule, dt):
-    """One tick of dt for every cell: reads state, writes out (both (K, n + 1)); x is scratch, (N_INPUTS, n)."""
+def step(state, out, x, neighbours, alive, rule, dt):
+    """One tick of dt for every live cell: reads state, writes out (both (K, n + 1)); x is scratch, (N_INPUTS, n).
+    A cell that isn't alive stays at 0."""
     k = state.shape[0]
     n = neighbours.shape[0]
-    for a in range(k):                                  # the inputs: own variables, and neighbours' means
-        for i in range(n):
+    for i in range(n):                                  # the inputs: own variables, then each neighbour's
+        for a in range(k):
             x[a, i] = state[a, i]
-            s = 0.0
-            for j in range(neighbours.shape[1]):
-                s += state[a, neighbours[i, j]]
-            x[k + a, i] = s * weight[i]
+        for d in range(neighbours.shape[1]):
+            j = neighbours[i, d]
+            for a in range(k):
+                x[k + d * k + a, i] = state[a, j]
     for a in range(k):                                  # constant and linear terms
         c0 = rule[a * N_TERMS]
         for i in range(n):
@@ -81,15 +75,18 @@ def step(state, out, x, neighbours, weight, rule, dt):
     t = 1 + N_INPUTS                                    # products and squares
     for p in range(N_INPUTS):
         for q in range(p, N_INPUTS):
-            for a in range(k):
-                c = rule[a * N_TERMS + t]
-                for i in range(n):
-                    out[a, i] += c * x[p, i] * x[q, i]
+            c0, c1, c2, c3 = rule[t], rule[N_TERMS + t], rule[2 * N_TERMS + t], rule[3 * N_TERMS + t]
+            for i in range(n):
+                prod = x[p, i] * x[q, i]
+                out[0, i] += c0 * prod
+                out[1, i] += c1 * prod
+                out[2, i] += c2 * prod
+                out[3, i] += c3 * prod
             t += 1
     for a in range(k):                                  # move each variable by its rate, within -1..1
         r = RATES[a] * dt
         for i in range(n):
-            out[a, i] = min(1.0, max(-1.0, state[a, i] + r * out[a, i]))
+            out[a, i] = min(1.0, max(-1.0, state[a, i] + r * out[a, i])) if alive[i] else 0.0
         out[a, n] = 0.0
 
 
@@ -103,13 +100,34 @@ def describe(rule, threshold: float = 1e-3) -> str:
     return "\n".join(lines)
 
 
-def widen(rule: np.ndarray, variables: tuple[str, ...]) -> np.ndarray:
-    """A rule written for fewer variables, as a rule for these: the same coefficients, the new terms zero."""
+def translate(rule: np.ndarray, variables: tuple[str, ...]) -> np.ndarray:
+    """A rule written in the earlier form (variables, and the mean of each over the neighbours, nx) as a rule for this
+    one: nx becomes the sum of x over the 8 directions / 8 (exact for a cell with all 8 neighbours), and each product
+    of old inputs expands into products of new ones. Variables the old rule lacks get zero coefficients."""
+    rule = np.asarray(rule, dtype=float)
     if len(rule) == N_PARAMS:
-        return np.asarray(rule, dtype=float)
-    old_terms = terms(variables)
+        return rule
+    old_inputs = variables + tuple("n" + x for x in variables)
+    old_terms = [()] + [(a,) for a in old_inputs] + [(a, b) for i, a in enumerate(old_inputs) for b in old_inputs[i:]]
+    index = {name: i for i, name in enumerate(INPUTS)}
+    expand = lambda name: ({index[name]: 1.0} if name in index else
+                           {index[f"{name[1:]}_{d}"]: 1 / len(DIRECTIONS) for d in DIRECTIONS})
+    pair = {}
+    for p in range(N_INPUTS):
+        for q in range(p, N_INPUTS):
+            pair[(p, q)] = len(pair) + 1 + N_INPUTS
     new = np.zeros(N_PARAMS)
     for a, name in enumerate(variables):
+        base = VARIABLES.index(name) * N_TERMS
         for c, term in enumerate(old_terms):
-            new[VARIABLES.index(name) * N_TERMS + TERMS.index(term)] = rule[a * len(old_terms) + c]
+            coefficient = rule[a * len(old_terms) + c]
+            if len(term) == 0:
+                new[base] += coefficient
+            elif len(term) == 1:
+                for p, wp in expand(term[0]).items():
+                    new[base + 1 + p] += coefficient * wp
+            else:
+                for p, wp in expand(term[0]).items():
+                    for q, wq in expand(term[1]).items():
+                        new[base + pair[(min(p, q), max(p, q))]] += coefficient * wp * wq
     return new

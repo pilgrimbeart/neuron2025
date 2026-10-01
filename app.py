@@ -153,8 +153,11 @@ class App:
                                (centre[0] + c * radius * 0.75, centre[1] + sn * radius * 0.75), 5 if lit else 2)
         food, poison, firings, spikes = r.counts
         rate = 100 * spikes / max(1, r.geometry.sheet.n * r.ticks * r.world.dt)
-        text = [f"tick {r.ticks}  task {self.task}  {'red' if r.food == robot.RED else 'blue'} is food (ringed)",
-                f"ate {food} food, {poison} poison; {firings} thruster firings; {rate:.1f} spikes per cell per 100"]
+        if r.growing:
+            text = [f"growing: {r.born} of {r.geometry.sheet.n} cells", ""]
+        else:
+            text = [f"tick {r.ticks}  task {self.task}  {'red' if r.food == robot.RED else 'blue'} is food (ringed)",
+                    f"ate {food} food, {poison} poison; {firings} thruster firings; {rate:.1f} spikes per cell per 100"]
         for i, line in enumerate(text):
             self.screen.blit(self.font.render(line, True, (255, 255, 255)), (x0 + 10, y0 + 8 + 20 * i))
 

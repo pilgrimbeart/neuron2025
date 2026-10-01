@@ -46,6 +46,7 @@ class World:
     taste_contact: float = 1.0  # how much a taste adds to (or takes from) v where the block touched
     taste_centre: float = 0.0   # ... and in the middle of the disc
     dt: float = 1.0             # simulated time per tick
+    grow: float = 10.0          # simulated time between one cell's birth and the next's, while the sheet grows
 
     def array(self) -> np.ndarray:
         return np.array([self.size, self.radius, self.reach, self.rate, self.push, self.kick, self.taste_contact,
@@ -68,8 +69,14 @@ class Geometry:
         inside = lambda x, y: 0 <= x < n and 0 <= y < n and (x - c) ** 2 + (y - c) ** 2 <= (n / 2) ** 2
         self.xy = np.array([(x, y) for x in range(n) for y in range(n) if inside(x, y)])
         index = {tuple(p): i for i, p in enumerate(self.xy)}
-        self.sheet = cell.Sheet([[index[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                                  if (dx or dy) and inside(x + dx, y + dy)] for x, y in self.xy])
+        self.sheet = cell.Sheet([[index.get((x + dx, y + dy)) for dx, dy in cell.OFFSETS] for x, y in self.xy])
+        births = []                         # the order cells are born in: a square spiral out from the middle
+        for p in spiral(int(c), int(c)):
+            if p in index:
+                births.append(index[p])
+                if len(births) == len(self.xy):
+                    break
+        self.order = np.array(births)
         at = lambda angle, r: index[(int(round(c + r * math.cos(angle))), int(round(c + r * math.sin(angle))))]
         s = body.sensors
         self.angles = np.array([2 * math.pi * i / s for i in range(s)])
@@ -87,20 +94,42 @@ class Geometry:
         return out
 
 
-TASTE = cell.VARIABLES.index("t")      # the variable tastes kick
+def spiral(x: int, y: int):
+    """Grid points in a square spiral out from (x, y): east 1, south 1, west 2, north 2, east 3, ..."""
+    yield x, y
+    step = 1
+    while True:
+        for dx, dy, length in ((1, 0, step), (0, 1, step), (-1, 0, step + 1), (0, -1, step + 1)):
+            for _ in range(length):
+                x, y = x + dx, y + dy
+                yield x, y
+        step += 2
 
-NOISE = 0.1                     # every life starts with each cell variable uniform in -NOISE..NOISE
+
+TASTE = cell.VARIABLES.index("t")      # the variable tastes kick
 
 
 @njit(cache=True)
-def start(n, seed_):
-    """Seed the world's randomness, and give every cell's variables small random values: the state, (K, n + 1)."""
+def develop(rule, neighbours, order, grow_ticks, dt):
+    """Grow the sheet: one cell (the first in order) at the start, and the next one every grow_ticks ticks, each
+    born with every variable 0, until all are there. Nothing outside reaches the cells meanwhile, so for a given rule
+    and dt the result is always the same. Returns the grown state, (K, n + 1)."""
+    n = neighbours.shape[0]
+    a = np.zeros((cell.K, n + 1))
+    b = np.zeros_like(a)
+    x = np.zeros((cell.N_INPUTS, n))
+    alive = np.zeros(n, dtype=np.bool_)
+    for k in range(n):
+        alive[order[k]] = True
+        for _ in range(grow_ticks):
+            cell.step(a, b, x, neighbours, alive, rule, dt)
+            a, b = b, a
+    return a
+
+
+@njit(cache=True)
+def seed(seed_):
     np.random.seed(seed_)
-    state = np.zeros((cell.K, n + 1))
-    for a in range(cell.K):
-        for i in range(n):
-            state[a, i] = (np.random.random() * 2 - 1) * NOISE
-    return state
 
 
 @njit(cache=True)
@@ -115,7 +144,7 @@ def _place(blocks, b, pos, w):
 
 
 @njit(cache=True)
-def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
+def tick(state, new, x, neighbours, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
          high, fired, w):
     """One tick of the robot and its world: from state, the next state is written into new (x is scratch). Mutates
     pos, blocks, counts (food eaten, poison eaten, thruster firings, cell spikes: any cell's v rising through
@@ -134,7 +163,7 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
             if np.random.random() < -math.expm1(-rate * min(1.0, seen) * dt):
                 i = inputs[s, colour]
                 state[0, i] = min(1.0, state[0, i] + kick)
-    cell.step(state, new, x, neighbours, weight, rule, dt)
+    cell.step(state, new, x, neighbours, alive, rule, dt)
     for i in range(x.shape[1]):                                # spikes, for the cost of activity
         if new[0, i] > cell.FIRE_LEVEL >= state[0, i]:
             counts[3] += 1
@@ -168,32 +197,42 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
 
 
 @njit(cache=True)
-def live(rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
-    """A whole life; returns (food, poison, thruster firings, cell spikes) for each half of it, shape (2, 4). Moves
-    pos and blocks."""
+def live(rule, grown, neighbours, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
+    """A whole life, starting from the grown sheet; returns (food, poison, thruster firings, cell spikes) for each
+    half of it, shape (2, 4). Moves pos and blocks."""
     n = neighbours.shape[0]
-    a = start(n, seed_)
+    seed(seed_)
+    a = grown.copy()
     b = np.zeros_like(a)
+    alive = np.ones(n, dtype=np.bool_)
     x = np.zeros((cell.N_INPUTS, n))
     counts = np.zeros((2, 4), dtype=np.int64)
     high = np.zeros(len(angles), dtype=np.bool_)
     fired = np.zeros(len(angles), dtype=np.bool_)
     for t in range(ticks):
         half = counts[0] if t < ticks // 2 else counts[1]
-        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, half, high,
+        tick(a, b, x, neighbours, alive, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, half, high,
              fired, w)
         a, b = b, a
     return counts
 
 
-def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, duration: float):
-    """A whole life of a duration of simulated time, in a fresh world: (per-half counts, as `live`; start position;
-    final position; the blocks at the start; the blocks at the end)."""
+def grow(rule, geometry: Geometry, world: World) -> np.ndarray:
+    """The grown sheet for a rule, at the world's tick size (the same for every life, so grow it once)."""
+    return develop(rule, geometry.sheet.neighbours, geometry.order, world.ticks(world.grow), world.dt)
+
+
+def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, duration: float, grown=None):
+    """A whole life of a duration of simulated time, in a fresh world, after the sheet has grown (pass grown, from
+    `grow`, to reuse it): (per-half counts, as `live`; start position; final position; the blocks at the start; the
+    blocks at the end)."""
+    if grown is None:
+        grown = grow(rule, geometry, world)
     pos, blocks = setup(task, seed_, food, world)
     start_pos, first = pos.copy(), blocks.copy()
     g = geometry
-    counts = live(rule, g.sheet.neighbours, g.sheet.weight, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos,
-                  blocks, food, world.array(), world.ticks(duration), seed_)
+    counts = live(rule, grown, g.sheet.neighbours, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos, blocks,
+                  food, world.array(), world.ticks(duration), seed_)
     return counts, start_pos, pos, first, blocks
 
 
@@ -217,25 +256,43 @@ def setup(task: str, seed_: int, food: int, world: World = World()):
 
 
 class Robot:
-    """The robot for the app: one tick at a time."""
+    """The robot for the app: one tick at a time, growing the sheet first (the robot waits, unborn, meanwhile)."""
 
     def __init__(self, rule: np.ndarray, task: str = "forage", seed_: int = 0, food: int = RED,
                  body: Body = Body(), world: World = World()):
         self.rule, self.task, self.food, self.world = rule, task, food, world
         self.geometry = g = Geometry(body)
         self.pos, self.blocks = setup(task, seed_, food, world)
-        self.state = start(g.sheet.n, seed_)
+        seed(seed_)
+        n = g.sheet.n
+        self.state = np.zeros((cell.K, n + 1))
         self.new = np.zeros_like(self.state)
-        self.x = np.zeros((cell.N_INPUTS, g.sheet.n))
+        self.x = np.zeros((cell.N_INPUTS, n))
+        self.alive = np.zeros(n, dtype=np.bool_)
+        self.born = 0                       # cells born so far; the robot lives once all n are
+        self.grow_ticks = world.ticks(world.grow)
         self.counts = np.zeros(4, dtype=np.int64)
         self.high = np.zeros(len(g.angles), dtype=np.bool_)
         self.fired = np.zeros(len(g.angles), dtype=np.bool_)
         self.fired_at = np.full(len(g.angles), -1e9)
-        self.ticks = 0
+        self.ticks = 0                      # ticks of life, after growing
+        self.growing_ticks = 0
+
+    @property
+    def growing(self) -> bool:
+        return self.born < self.geometry.sheet.n or self.growing_ticks % self.grow_ticks
 
     def step(self) -> None:
         g = self.geometry
-        tick(self.state, self.new, self.x, g.sheet.neighbours, g.sheet.weight, self.rule, g.angles, g.inputs,
+        if self.growing:
+            if self.growing_ticks % self.grow_ticks == 0:
+                self.alive[g.order[self.born]] = True
+                self.born += 1
+            cell.step(self.state, self.new, self.x, g.sheet.neighbours, self.alive, self.rule, self.world.dt)
+            self.state, self.new = self.new, self.state
+            self.growing_ticks += 1
+            return
+        tick(self.state, self.new, self.x, g.sheet.neighbours, self.alive, self.rule, g.angles, g.inputs,
              g.outputs, g.taste, g.centre, self.pos, self.blocks, self.food, self.counts, self.high, self.fired,
              self.world.array())
         self.state, self.new = self.new, self.state

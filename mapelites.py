@@ -18,6 +18,10 @@ sheet's spikes per cell per 100 units of time (activity above evolve.SPARSE_RATE
 wins, scored as in evolve.py, except that learning (the rise in food share from the first half of lives to the
 second) only counts when both halves have at least MIN_MEALS meals per life, so that stopping eating can't pass for
 learning. Offspring: a random elite, mutated at a random scale, or crossed with another along the line between them.
+Racing: each candidate is first lived at the first tick size only (a third of the work). Its score can only fall
+when the other tick sizes are added (the score is the worse over them), so only a candidate that already beats its
+niche's elite, or lands in an empty niche, is lived at the others. That rejects nothing that could have won (bar a
+candidate whose niche moves when the other tick sizes are added), and typically only a few percent go on.
 
 --seed adds saved rules to the first batches: a kernel (.json, with its body genes) with SEED_VARIANTS small
 variations, or every elite of another search's archive (.pkl). A way to bring in rules from another search, such as
@@ -62,34 +66,33 @@ N_GENES = cell.N_PARAMS + 2
 
 def evaluate(args):
     """(score, behaviour (meals, food change, poison change), learning, meals per life, halves, spike rate) for a
-    genome, lived at
-    each tick size in dts. Score and learning are the worse over the tick sizes (so no rule can rely on the tick
-    size); behaviour and meals are pooled over them; halves is, for each tick size, the (food, poison) eaten in the
-    first and second halves of its lives, shape (len(dts), 2, 2); spike rate is spikes per cell per unit time."""
+    genome lived at each tick size in dts: `combine` of `live_at` for each."""
     genome, task, worlds, dts = args
-    g = evolve.geometry()
-    rule = genome[:cell.N_PARAMS]
-    lives = 2 * len(worlds)
-    halves = np.zeros((len(dts), 2, 2))         # tick size x (first, second half) x (food, poison)
-    scores, learnings, rates = [], [], []
-    for d, dt in enumerate(dts):
-        world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]), dt=dt)
-        total = 0.0
-        for s in worlds:
-            values = []
-            for food in (robot.RED, robot.BLUE):
-                per_half = robot.lifetime(rule, g, task, s, food, world, evolve.DURATION[task])[0]
-                halves[d] += per_half[:, :2]
-                f, p = per_half[:, 0].sum(), per_half[:, 1].sum()
-                values.append(f - evolve.POISON * p - evolve.cost(per_half, g.sheet.n, evolve.DURATION[task]))
-                rates.append(evolve.spike_rate(per_half, g.sheet.n, evolve.DURATION[task]))
-            total += sum(values) if task == "taste" else min(values)
-        learnings.append(learned(halves[d], lives))
-        scores.append(total / len(worlds) + evolve.LEARN * learnings[-1])
+    return combine([live_at((genome, task, worlds, dt)) for dt in dts], len(worlds))
+
+
+def live_at(args):
+    """A genome lived in each world (red as food, then blue) at one tick size: its score (the mean of the worlds'
+    values, plus the learning bonus), learning, the (food, poison) eaten in each half of its lives (2, 2), and its
+    spike rate (spikes per cell per unit time)."""
+    genome, task, worlds, dt = args
+    world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]))
+    a = evolve.assess(genome[:cell.N_PARAMS], task, worlds, dt, world)
+    halves = a["halves"].sum(axis=0)
+    learning = learned(halves, 2 * len(worlds))
+    return {"score": float(a["values"].mean()) + evolve.LEARN * learning, "learning": learning, "halves": halves,
+            "spikes": float(a["spikes"].mean())}
+
+
+def combine(at, worlds: int):
+    """The tick sizes' results as one: score and learning the worse over them (so no rule can rely on the tick
+    size); behaviour and meals pooled over them; halves (len(at), 2, 2); spike rate the mean."""
+    halves = np.array([r["halves"] for r in at])
     (f1, p1), (f2, p2) = halves.sum(axis=0)
-    meals = halves.sum() / (lives * len(dts))
+    meals = halves.sum() / (2 * worlds * len(at))
     behaviour = (meals, (f2 - f1) / (f1 + f2 + 2), (p2 - p1) / (p1 + p2 + 2))
-    return min(scores), behaviour, min(learnings), meals, halves, float(np.mean(rates))
+    return (min(r["score"] for r in at), behaviour, min(r["learning"] for r in at), meals, halves,
+            float(np.mean([r["spikes"] for r in at])))
 
 
 def learned(halves, lives: int) -> float:
@@ -174,6 +177,7 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
     started = time.time()
     batches = 0
     validated = -1.0
+    raced = passed = 0
     extra = from_kernels(seeds, rng)
     with Pool() as pool:
         while time.time() < deadline:
@@ -184,13 +188,24 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
                 genomes = [offspring(archive, rng) for _ in range(BATCH)]
             if extra:
                 genomes, extra = extra[:BATCH] + genomes[len(extra[:BATCH]):], extra[BATCH:]
-            for genome, (score, behaviour, learning, meals, _halves, rate) in zip(
-                    genomes, pool.map(evaluate, [(g_, task, WORLDS, evolve.DTS) for g_ in genomes])):
+            first = pool.map(live_at, [(g_, task, WORLDS, evolve.DTS[0]) for g_ in genomes])
+            racing = []                         # candidates whose first tick size already beats their niche's elite
+            for g_, r in zip(genomes, first):
+                key = niche(combine([r], len(WORLDS))[1])
+                if key not in archive or r["score"] > archive[key]["score"]:
+                    racing.append((g_, r))
+            rest = pool.map(live_at, [(g_, task, WORLDS, dt) for g_, _ in racing for dt in evolve.DTS[1:]])
+            others = len(evolve.DTS) - 1
+            raced += len(genomes)
+            passed += len(racing)
+            for c, (genome, r) in enumerate(racing):
+                score, behaviour, learning, meals, _halves, rate = combine(
+                    [r] + rest[c * others:(c + 1) * others], len(WORLDS))
                 key = niche(behaviour)
                 if key not in archive or score > archive[key]["score"]:
                     archive[key] = {"genome": genome, "score": score, "behaviour": behaviour,
                                     "learning": learning, "meals": meals, "spikes": rate}
-            evaluations += len(genomes)
+            evaluations += len(genomes)         # candidates tried
             batches += 1
             best = max(archive.values(), key=lambda e: e["score"])
             learner = max(archive.values(), key=lambda e: e["learning"])
@@ -212,7 +227,8 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
                       f"{len(archive):3d}/{BINS ** 3} niches  best score {best['score']:6.2f} "
                       f"(meals {best['meals']:.1f}, learning {best['learning']:+.2f}, spikes {100 * best['spikes']:.1f})  "
                       f"best learner {learner['learning']:+.2f} (meals {learner['meals']:.1f}, score "
-                      f"{learner['score']:.2f}, spikes {100 * learner['spikes']:.1f})  best validated {validated:+.2f}",
+                      f"{learner['score']:.2f}, spikes {100 * learner['spikes']:.1f})  best validated {validated:+.2f}  "
+                      f"raced {passed}/{raced} through",
                       flush=True)
 
 

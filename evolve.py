@@ -63,25 +63,37 @@ def geometry() -> robot.Geometry:
     return _geometry
 
 
-def life(rule: np.ndarray, task: str, seed: int, food: int, halves: bool = False, world: robot.World = robot.World(),
-         dt: float = 1.0):
-    """The task's score for one life at tick size dt, less the cost of activity; with halves, also the (food, poison)
-    eaten in each half."""
+def assess(rule: np.ndarray, task: str, seeds, dt: float = 1.0, world: robot.World = robot.World()) -> dict:
+    """Live a rule in each world at tick size dt, all lives together: for taste, choose and forage each world twice
+    (red as food, then blue), otherwise once (food alternating). Returns, per world, its value ("values": a life's
+    task score less the cost of its activity; for a pair of lives, their sum for taste and the worse for choose and
+    forage) and ("halves") the (food, poison) eaten in each half of its lives, (worlds, 2, 2); and the spike rate of
+    each life ("spikes")."""
     world = dataclasses.replace(world, dt=dt)
-    per_half, start, pos, first, blocks = robot.lifetime(rule, geometry(), task, seed, food, world, DURATION[task])
-    food_eaten, poison = per_half[:, :2].sum(axis=0)
-    if task == "move":
-        value = float(np.hypot(*(pos - start))) / world.radius
-    elif task == "approach":
-        # partial credit: how much nearer the current block the robot ended than the block started (a block that
-        # reappeared after being eaten counts from a typical 12)
-        distance = float(np.hypot(*(blocks[0, :2] - pos)))
-        reference = float(np.hypot(*(first[0, :2] - start))) if food_eaten == 0 else 12.0
-        value = float(food_eaten) + max(0.0, 1.0 - distance / reference)
-    else:
-        value = float(food_eaten - POISON * poison)
-    value -= cost(per_half, geometry().sheet.n, DURATION[task])
-    return (value, per_half[:, :2]) if halves else value
+    pairs = task in ("taste", "choose", "forage")
+    worlds = [(s, f) for s in seeds for f in (robot.RED, robot.BLUE)] if pairs else [(s, s % 2) for s in seeds]
+    r = robot.lifetimes(rule, geometry(), task, worlds, world, DURATION[task])
+    values = []
+    for i, counts in enumerate(r["counts"]):
+        food_eaten, poison = counts[:, :2].sum(axis=0)
+        if task == "move":
+            value = float(np.hypot(*(r["end"][i] - r["start"][i]))) / world.radius
+        elif task == "approach":
+            # partial credit: how much nearer the current block the robot ended than the block started (a block that
+            # reappeared after being eaten counts from a typical 12)
+            distance = float(np.hypot(*(r["last"][i, 0, :2] - r["end"][i])))
+            reference = float(np.hypot(*(r["first"][i, 0, :2] - r["start"][i]))) if food_eaten == 0 else 12.0
+            value = float(food_eaten) + max(0.0, 1.0 - distance / reference)
+        else:
+            value = float(food_eaten - POISON * poison)
+        values.append(value - cost(counts, geometry().sheet.n, DURATION[task]))
+    values = np.array(values)
+    halves = r["counts"][:, :, :2]
+    if pairs:
+        values = values.reshape(-1, 2).sum(axis=1) if task == "taste" else values.reshape(-1, 2).min(axis=1)
+        halves = halves.reshape(-1, 2, 2, 2).sum(axis=1)
+    spikes = np.array([spike_rate(c, geometry().sheet.n, DURATION[task]) for c in r["counts"]])
+    return {"values": values, "halves": halves, "spikes": spikes}
 
 
 def cost(per_half, cells: int, duration: float) -> float:
@@ -101,17 +113,13 @@ def score(rule: np.ndarray, task: str, seeds, dts=DTS) -> float:
 
 
 def score_at(rule: np.ndarray, task: str, seeds, dt: float) -> float:
-    if task in ("move", "approach"):
-        return float(np.mean([life(rule, task, s, s % 2, dt=dt) for s in seeds]))
-    total = 0.0
-    for s in seeds:
-        (a, halves_a), (b, halves_b) = (life(rule, task, s, food, halves=True, dt=dt)
-                                        for food in (robot.RED, robot.BLUE))
-        total += a + b if task == "taste" else min(a, b)
-        (f1, p1), (f2, p2) = halves_a + halves_b
-        if f1 + p1 and f2 + p2:
-            total += LEARN * (f2 / (f2 + p2) - f1 / (f1 + p1))
-    return total / len(seeds)
+    a = assess(rule, task, seeds, dt)
+    total = a["values"].sum()
+    if task in ("taste", "choose", "forage"):
+        for (f1, p1), (f2, p2) in a["halves"]:
+            if f1 + p1 and f2 + p2:
+                total += LEARN * (f2 / (f2 + p2) - f1 / (f1 + p1))
+    return float(total / len(seeds))
 
 
 def _job(args):
@@ -172,7 +180,7 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
 def _halves(args):
     """(food, poison) in each half, summed over a world's red-food and blue-food lives."""
     rule, task, seed = args
-    return sum(life(rule, task, seed, food, halves=True)[1] for food in (robot.RED, robot.BLUE))
+    return assess(rule, task, [seed])["halves"][0]
 
 
 def _score_one(args):

@@ -84,16 +84,18 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 ## Where things stand
 
 - **Works:** move and approach evolve in minutes, at every tick size.
-- **Learns, via MAP-Elites:** the taste task, at every tick size, and sparsely. With the best rule (`sparse_robust_learner.json`), the first taste decides it: after poison it stays away, after food it keeps eating. Two things made that possible: giving taste its own variable t, and scoring at more than one tick size. Charging for activity turned the broad travelling waves into something closer to pulse trains.
-- **Not yet:** choose and forage. The taste learner can't tell colours apart: in forage it eats both alike and less of both over time, because in the taste task there was only ever one colour.
+- **A one-bit switch, via MAP-Elites:** in the taste task (one red block, food or poison), one bite decides it. After poison the robot stays away, after food it keeps eating, at every tick size and sparsely (`sparse_robust_learner.json`, with pulse trains rather than broad waves). But what it learns is a switch (less drawn to blocks after a bad taste), not an association: in forage it eats less of both colours.
+- **Not yet:** learning which colour is food. One night of MAP-Elites on choose found nothing that held up. Each life held only 1–3 meals, so learning had to be one-shot.
 
 ## Next steps
 
-1. **Choose:** MAP-Elites on choose, seeded with the taste run's archive (`--seed kernels/map_taste.pkl`).
-2. **Organism-wide memory:** spread what one side learned to the others.
-3. **Make rules describable:** prune terms one by one while the score holds.
-4. **Parked, in git history:** a fuller cell (each neighbour's variables as separate inputs, every product of two inputs: 2,812 coefficients), a sheet that grows from one central cell along a square spiral, and an untested PyTorch version of the simulation for running many lives at once on a GPU. It is the commit "Parked: ..." just before "Revert ...": `git revert` the revert to bring it back.
-5. **Speed:** this laptop manages about 500 lives per second on 8 cores. Renting a GPU only pays once the simulation is batched (the parked PyTorch version).
+1. **Graze, then discriminate:** a world built for many encounters (a shorter sight range so the nearest block dominates, several blocks of each colour, longer lives), giving tens of tastes per life. First graze: both colours food, score meals per life, to get a robot that moves well among many blocks. Then discriminate: one colour food, the other poison; score the last third of each life and its improvement on the first, so gradual learning gets credit.
+2. **Meta-structures:** check whether the sparse learner's pulses pass through each other or annihilate; then try discriminate on a bigger sheet (about 20×20, sensors and thrusters spaced out) to give room for glider-like structures (`LESSONS.md`, "Cells, variables and meta-structures").
+3. **Organism-wide memory:** spread what one side learned to the others.
+4. **Make rules describable:** prune terms one by one while the score holds.
+5. **Side-quest, time:** the medium is continuous (rules mustn't depend on the tick: no global clock). Two alternatives are worth trying later. One is rewarding rules whose sheet settles into a stable, low-activity oscillation that emerges from the cells, which is allowed: it is a property of the medium, not of the tick. The other is a synchronous medium like a cellular automaton (score at dt 1 only), where the tick is a real global clock rules may use, as in Life or Rule 110: cheaper, but less biological.
+6. **Parked, in git history:** a fuller cell (each neighbour's variables as separate inputs, every product of two inputs: 2,812 coefficients), a sheet that grows from one central cell along a square spiral, and an untested PyTorch version of the simulation for running many lives at once on a GPU. It is the commit "Parked: ..." just before "Revert ...": `git revert` the revert to bring it back.
+7. **Speed:** a genome's lives step together, and the rule is written out from TERMS so it vectorises; with racing (dt 1 first, dt 0.5 only for candidates that could win), MAP-Elites runs about 5–6× faster than before (`LESSONS.md`). Renting a GPU only pays once the simulation is batched across genomes too (the parked PyTorch version).
 
 ## Requirements
 

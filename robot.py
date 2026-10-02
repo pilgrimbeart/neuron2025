@@ -88,113 +88,138 @@ class Geometry:
 
 
 TASTE = cell.VARIABLES.index("t")      # the variable tastes kick
-
-NOISE = 0.1                     # every life starts with each cell variable uniform in -NOISE..NOISE
-
-
-@njit(cache=True)
-def start(n, seed_):
-    """Seed the world's randomness, and give every cell's variables small random values: the state, (K, n + 1)."""
-    np.random.seed(seed_)
-    state = np.zeros((cell.K, n + 1))
-    for a in range(cell.K):
-        for i in range(n):
-            state[a, i] = (np.random.random() * 2 - 1) * NOISE
-    return state
+NOISE = 0.1                            # every life starts with each cell variable uniform in -NOISE..NOISE
+DTYPE = cell.DTYPE                     # the cells' numbers (the world's are 64-bit)
 
 
 @njit(cache=True)
-def _place(blocks, b, pos, w):
+def _random(rng, l):
+    """The next uniform 0..1 from life l's own generator (splitmix64). Each life has its own stream, so a world's
+    food and poison lives (the same seed) stay identical until the first taste."""
+    rng[l] += np.uint64(0x9E3779B97F4A7C15)
+    z = rng[l]
+    z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    z = z ^ (z >> np.uint64(31))
+    return (z >> np.uint64(11)) * (1.0 / 9007199254740992.0)
+
+
+@njit(cache=True)
+def start(state, n, rng):
+    """Give every cell of every life small random variables, from each life's own generator."""
+    lives = rng.shape[0]
+    for l in range(lives):
+        for a in range(state.shape[0]):
+            for i in range(n):
+                state[a, i * lives + l] = (_random(rng, l) * 2 - 1) * NOISE
+
+
+@njit(cache=True)
+def _place(blocks, l, b, pos, w, rng):
     size, radius = w[0], w[1]
     while True:
-        x = radius + np.random.random() * (size - 2 * radius)
-        y = radius + np.random.random() * (size - 2 * radius)
-        if (x - pos[0]) ** 2 + (y - pos[1]) ** 2 > (4 * radius) ** 2:
-            blocks[b, 0], blocks[b, 1] = x, y
+        x = radius + _random(rng, l) * (size - 2 * radius)
+        y = radius + _random(rng, l) * (size - 2 * radius)
+        if (x - pos[l, 0]) ** 2 + (y - pos[l, 1]) ** 2 > (4 * radius) ** 2:
+            blocks[l, b, 0], blocks[l, b, 1] = x, y
             return
 
 
 @njit(cache=True)
 def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
-         high, fired, w):
-    """One tick of the robot and its world: from state, the next state is written into new (x is scratch). Mutates
-    pos, blocks, counts (food eaten, poison eaten, thruster firings, cell spikes: any cell's v rising through
-    FIRE_LEVEL), high (actuator above FIRE_LEVEL) and fired
-    (which actuators fired this tick)."""
+         high, fired, rng, w):
+    """One tick of L robots (one sheet each, the same rule) and their worlds: from state the next state is written into
+    new (both (K, (n + 1) * L), as cell.step; x is scratch). Per life l, mutates pos[l], blocks[l], counts[l] (food
+    eaten, poison eaten, thruster firings, cell spikes: any cell's v rising through FIRE_LEVEL), high[l] (actuator
+    above FIRE_LEVEL), fired[l] (which actuators fired this tick) and rng[l]."""
     size, radius, reach, rate, push, kick, contact, middle, dt = w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]
-    for s in range(len(angles)):                               # senses
-        fx, fy = math.cos(angles[s]), math.sin(angles[s])
-        for colour in range(2):
-            seen = 0.0
-            for b in range(len(blocks)):
-                if blocks[b, 2] == colour:
-                    dx, dy = blocks[b, 0] - pos[0], blocks[b, 1] - pos[1]
-                    d = math.sqrt(dx * dx + dy * dy) + 1e-9
-                    seen += max(0.0, (fx * dx + fy * dy) / d) / (1 + (d / reach) ** 2)
-            if np.random.random() < -math.expm1(-rate * min(1.0, seen) * dt):
-                i = inputs[s, colour]
-                state[0, i] = min(1.0, state[0, i] + kick)
+    lives = pos.shape[0]
+    n = neighbours.shape[0]
+    for l in range(lives):                                     # senses
+        for s in range(len(angles)):
+            fx, fy = math.cos(angles[s]), math.sin(angles[s])
+            for colour in range(2):
+                seen = 0.0
+                for b in range(blocks.shape[1]):
+                    if blocks[l, b, 2] == colour:
+                        dx, dy = blocks[l, b, 0] - pos[l, 0], blocks[l, b, 1] - pos[l, 1]
+                        d = math.sqrt(dx * dx + dy * dy) + 1e-9
+                        seen += max(0.0, (fx * dx + fy * dy) / d) / (1 + (d / reach) ** 2)
+                if _random(rng, l) < -math.expm1(-rate * min(1.0, seen) * dt):
+                    c = inputs[s, colour] * lives + l
+                    state[0, c] = min(1.0, state[0, c] + kick)
     cell.step(state, new, x, neighbours, weight, rule, dt)
-    for i in range(x.shape[1]):                                # spikes, for the cost of activity
-        if new[0, i] > cell.FIRE_LEVEL >= state[0, i]:
-            counts[3] += 1
-    for s in range(len(angles)):                               # actions
-        now = new[0, outputs[s]] > cell.FIRE_LEVEL
-        fired[s] = now and not high[s]
-        if fired[s]:
-            pos[0] -= push * math.cos(angles[s])
-            pos[1] -= push * math.sin(angles[s])
-            counts[2] += 1
-        high[s] = now
-    pos[0] = min(size - radius, max(radius, pos[0]))
-    pos[1] = min(size - radius, max(radius, pos[1]))
-    for b in range(len(blocks)):                               # eating
-        dx, dy = blocks[b, 0] - pos[0], blocks[b, 1] - pos[1]
-        if dx * dx + dy * dy < (radius + 0.5) ** 2:
-            good = blocks[b, 2] == food
-            counts[0 if good else 1] += 1
-            facing, best = 0, -2.0
-            for s in range(len(angles)):
-                along = (math.cos(angles[s]) * dx + math.sin(angles[s]) * dy) / (math.sqrt(dx * dx + dy * dy) + 1e-9)
-                if along > best:
-                    facing, best = s, along
-            sign = 1.0 if good else -1.0
-            i = taste[facing]
-            new[TASTE, i] = min(1.0, max(-1.0, new[TASTE, i] + sign * contact))
-            for t in range(len(centre)):
-                i = centre[t]
-                new[TASTE, i] = min(1.0, max(-1.0, new[TASTE, i] + sign * middle))
-            _place(blocks, b, pos, w)
+    for c in range(n * lives):                                 # spikes, for the cost of activity
+        if new[0, c] > cell.FIRE_LEVEL >= state[0, c]:
+            counts[c % lives, 3] += 1
+    for l in range(lives):
+        for s in range(len(angles)):                           # actions
+            now = new[0, outputs[s] * lives + l] > cell.FIRE_LEVEL
+            fired[l, s] = now and not high[l, s]
+            if fired[l, s]:
+                pos[l, 0] -= push * math.cos(angles[s])
+                pos[l, 1] -= push * math.sin(angles[s])
+                counts[l, 2] += 1
+            high[l, s] = now
+        pos[l, 0] = min(size - radius, max(radius, pos[l, 0]))
+        pos[l, 1] = min(size - radius, max(radius, pos[l, 1]))
+        for b in range(blocks.shape[1]):                       # eating
+            dx, dy = blocks[l, b, 0] - pos[l, 0], blocks[l, b, 1] - pos[l, 1]
+            if dx * dx + dy * dy < (radius + 0.5) ** 2:
+                good = blocks[l, b, 2] == food[l]
+                counts[l, 0 if good else 1] += 1
+                facing, best = 0, -2.0
+                for s in range(len(angles)):
+                    along = (math.cos(angles[s]) * dx + math.sin(angles[s]) * dy) / (math.sqrt(dx * dx + dy * dy) + 1e-9)
+                    if along > best:
+                        facing, best = s, along
+                sign = 1.0 if good else -1.0
+                c = taste[facing] * lives + l
+                new[TASTE, c] = min(1.0, max(-1.0, new[TASTE, c] + sign * contact))
+                for t in range(len(centre)):
+                    c = centre[t] * lives + l
+                    new[TASTE, c] = min(1.0, max(-1.0, new[TASTE, c] + sign * middle))
+                _place(blocks, l, b, pos, w, rng)
 
 
 @njit(cache=True)
-def live(rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, seed_):
-    """A whole life; returns (food, poison, thruster firings, cell spikes) for each half of it, shape (2, 4). Moves
-    pos and blocks."""
-    n = neighbours.shape[0]
-    a = start(n, seed_)
-    b = np.zeros_like(a)
-    x = np.zeros((cell.N_INPUTS, n))
-    counts = np.zeros((2, 4), dtype=np.int64)
-    high = np.zeros(len(angles), dtype=np.bool_)
-    fired = np.zeros(len(angles), dtype=np.bool_)
+def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, rng):
+    """Whole lives of L robots, one per world, all with one rule; a, b and x are the working arrays (as cell.step).
+    Returns (food, poison, thruster firings, cell spikes) for each half of each life, shape (L, 2, 4). Moves pos and
+    blocks."""
+    lives = pos.shape[0]
+    start(a, neighbours.shape[0], rng)
+    counts = np.zeros((lives, 2, 4), dtype=np.int64)
+    high = np.zeros((lives, len(angles)), dtype=np.bool_)
+    fired = np.zeros((lives, len(angles)), dtype=np.bool_)
     for t in range(ticks):
-        half = counts[0] if t < ticks // 2 else counts[1]
-        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, half, high,
-             fired, w)
+        half = 0 if t < ticks // 2 else 1
+        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food,
+             counts[:, half], high, fired, rng, w)
         a, b = b, a
     return counts
 
 
-def lifetime(rule, geometry: Geometry, task: str, seed_: int, food: int, world: World, duration: float):
-    """A whole life of a duration of simulated time, in a fresh world: (per-half counts, as `live`; start position;
-    final position; the blocks at the start; the blocks at the end)."""
-    pos, blocks = setup(task, seed_, food, world)
+def working(n: int, lives: int):
+    """The arrays cell.step works in, for n cells and L lives: two states and its scratch."""
+    return (np.zeros((cell.K, (n + 1) * lives), dtype=DTYPE), np.zeros((cell.K, (n + 1) * lives), dtype=DTYPE),
+            np.zeros((cell.N_INPUTS + cell.K, lives), dtype=DTYPE))
+
+
+def lifetimes(rule, geometry: Geometry, task: str, worlds, world: World, duration: float) -> dict:
+    """One life of a duration of simulated time in each of worlds ((seed, food) pairs), all with one rule, run
+    together. Returns arrays over lives: counts (L, 2, 4) as `live`; start and end positions (L, 2); the blocks at the
+    start and at the end (L, blocks, 3)."""
+    setups = [setup(task, s, food, world) for s, food in worlds]
+    pos = np.array([p for p, _ in setups])
+    blocks = np.array([b for _, b in setups])
     start_pos, first = pos.copy(), blocks.copy()
     g = geometry
-    counts = live(rule, g.sheet.neighbours, g.sheet.weight, g.angles, g.inputs, g.outputs, g.taste, g.centre, pos,
-                  blocks, food, world.array(), world.ticks(duration), seed_)
-    return counts, start_pos, pos, first, blocks
+    rng = np.array([s for s, _ in worlds], dtype=np.uint64)
+    counts = live(*working(g.sheet.n, len(worlds)), np.asarray(rule, dtype=DTYPE), g.sheet.neighbours, g.sheet.weight,
+                  g.angles, g.inputs, g.outputs, g.taste, g.centre, pos, blocks,
+                  np.array([f for _, f in worlds], dtype=float), world.array(), world.ticks(duration), rng)
+    return {"counts": counts, "start": start_pos, "end": pos, "first": first, "last": blocks}
 
 
 def setup(task: str, seed_: int, food: int, world: World = World()):
@@ -217,27 +242,33 @@ def setup(task: str, seed_: int, food: int, world: World = World()):
 
 
 class Robot:
-    """The robot for the app: one tick at a time."""
+    """The robot for the app: one life, one tick at a time."""
 
     def __init__(self, rule: np.ndarray, task: str = "forage", seed_: int = 0, food: int = RED,
                  body: Body = Body(), world: World = World()):
-        self.rule, self.task, self.food, self.world = rule, task, food, world
+        self.rule, self.task, self.food, self.world = np.asarray(rule, dtype=DTYPE), task, food, world
         self.geometry = g = Geometry(body)
-        self.pos, self.blocks = setup(task, seed_, food, world)
-        self.state = start(g.sheet.n, seed_)
-        self.new = np.zeros_like(self.state)
-        self.x = np.zeros((cell.N_INPUTS, g.sheet.n))
-        self.counts = np.zeros(4, dtype=np.int64)
-        self.high = np.zeros(len(g.angles), dtype=np.bool_)
-        self.fired = np.zeros(len(g.angles), dtype=np.bool_)
+        pos, blocks = setup(task, seed_, food, world)
+        self._pos, self._blocks = pos[None].copy(), blocks[None].copy()
+        self._food = np.array([food], dtype=float)
+        self.rng = np.array([seed_], dtype=np.uint64)
+        self.state, self.new, self.x = working(g.sheet.n, 1)
+        start(self.state, g.sheet.n, self.rng)
+        self._counts = np.zeros((1, 4), dtype=np.int64)
+        self.high = np.zeros((1, len(g.angles)), dtype=np.bool_)
+        self.fired = np.zeros((1, len(g.angles)), dtype=np.bool_)
         self.fired_at = np.full(len(g.angles), -1e9)
         self.ticks = 0
+
+    pos = property(lambda self: self._pos[0])
+    blocks = property(lambda self: self._blocks[0])
+    counts = property(lambda self: self._counts[0])
 
     def step(self) -> None:
         g = self.geometry
         tick(self.state, self.new, self.x, g.sheet.neighbours, g.sheet.weight, self.rule, g.angles, g.inputs,
-             g.outputs, g.taste, g.centre, self.pos, self.blocks, self.food, self.counts, self.high, self.fired,
-             self.world.array())
+             g.outputs, g.taste, g.centre, self._pos, self._blocks, self._food, self._counts, self.high, self.fired,
+             self.rng, self.world.array())
         self.state, self.new = self.new, self.state
         self.ticks += 1
-        self.fired_at[self.fired] = self.ticks
+        self.fired_at[self.fired[0]] = self.ticks

@@ -10,18 +10,18 @@ evaluation is deterministic and an elite can't hold its place by luck; and it li
 evolve.DTS, scoring the worse, so that no rule can rely on the tick size.
 
 Behaviour, 3 axes of BINS bins each:
-  meals     meals per life, 0..MAX_MEALS
-  food      how eating food changes from the first half of a life to the second, (F2 - F1) / (F1 + F2 + 2)
-  poison    the same for poison, (P2 - P1) / (P1 + P2 + 2)
+  meals     meals per life, 0..MAX_MEALS[task]
+  food      how eating food changes from the first third of a life to the last, (F3 - F1) / (F1 + F3 + 2)
+  poison    the same for poison, (P3 - P1) / (P1 + P3 + 2)
 A learner sits where poison falls and food doesn't; eating everything, in the middle. The log's "spikes" is the
 sheet's spikes per cell per 100 units of time (activity above evolve.SPARSE_RATE costs score). Within a cell the higher score
-wins, scored as in evolve.py, except that learning (the rise in food share from the first half of lives to the
-second) only counts when both halves have at least MIN_MEALS meals per life, so that stopping eating can't pass for
+wins, scored as in evolve.py, except that learning (the rise in food share from the first third of lives to the
+last) only counts when both have more than MIN_MEALS meals per life, so that stopping eating can't pass for
 learning. Offspring: a random elite, mutated at a random scale, or crossed with another along the line between them.
-Racing: each candidate is first lived at the first tick size only (a third of the work). Its score can only fall
-when the other tick sizes are added (the score is the worse over them), so only a candidate that already beats its
-niche's elite, or lands in an empty niche, is lived at the others. That rejects nothing that could have won (bar a
-candidate whose niche moves when the other tick sizes are added), and typically only a few percent go on.
+Racing: each candidate is lived at the tick sizes one at a time, coarsest (cheapest) first. Its score can only fall
+as tick sizes are added (the score is the worst over them), so after each, only candidates that already beat their
+niche's elite, or land in an empty niche, go on. That rejects nothing that could have won (bar a candidate whose
+niche moves as tick sizes are added), and typically only a few percent go past the first.
 
 --seed adds saved rules to the first batches: a kernel (.json, with its body genes) with SEED_VARIANTS small
 variations, or every elite of another search's archive (.pkl). A way to bring in rules from another search, such as
@@ -53,7 +53,7 @@ VALIDATION = range(10**6, 10**6 + 64)
 VALIDATE_EVERY = 50
 MIN_MEALS = 0.25
 BINS = 8
-MAX_MEALS = 8.0
+MAX_MEALS = {"taste": 8.0, "choose": 8.0, "discriminate": 80.0}   # the meals axis's range, per task
 CHANGE = 0.6                # the food and poison axes span -CHANGE..CHANGE
 TASTE_MAX = 1.5
 BATCH = 64
@@ -65,7 +65,7 @@ N_GENES = cell.N_PARAMS + 2
 
 
 def evaluate(args):
-    """(score, behaviour (meals, food change, poison change), learning, meals per life, halves, spike rate) for a
+    """(score, behaviour (meals, food change, poison change), learning, meals per life, parts, spike rate) for a
     genome lived at each tick size in dts: `combine` of `live_at` for each."""
     genome, task, worlds, dts = args
     return combine([live_at((genome, task, worlds, dt)) for dt in dts], len(worlds))
@@ -73,40 +73,42 @@ def evaluate(args):
 
 def live_at(args):
     """A genome lived in each world (red as food, then blue) at one tick size: its score (the mean of the worlds'
-    values, plus the learning bonus), learning, the (food, poison) eaten in each half of its lives (2, 2), and its
+    values, plus the learning bonus), learning, the (food, poison) eaten in each part of its lives (PARTS, 2), and its
     spike rate (spikes per cell per unit time)."""
     genome, task, worlds, dt = args
     world = robot.World(taste_contact=float(genome[-2]), taste_centre=float(genome[-1]))
     a = evolve.assess(genome[:cell.N_PARAMS], task, worlds, dt, world)
-    halves = a["halves"].sum(axis=0)
-    learning = learned(halves, 2 * len(worlds))
-    return {"score": float(a["values"].mean()) + evolve.LEARN * learning, "learning": learning, "halves": halves,
+    parts = a["parts"].sum(axis=0)
+    learning = evolve.learned(parts, 2 * len(worlds), MIN_MEALS)
+    return {"score": float(a["values"].mean()) + evolve.LEARN * learning, "learning": learning, "parts": parts,
             "spikes": float(a["spikes"].mean())}
 
 
 def combine(at, worlds: int):
     """The tick sizes' results as one: score and learning the worse over them (so no rule can rely on the tick
-    size); behaviour and meals pooled over them; halves (len(at), 2, 2); spike rate the mean."""
-    halves = np.array([r["halves"] for r in at])
-    (f1, p1), (f2, p2) = halves.sum(axis=0)
-    meals = halves.sum() / (2 * worlds * len(at))
+    size); behaviour and meals pooled over them; parts (len(at), PARTS, 2); spike rate the mean."""
+    parts = np.array([r["parts"] for r in at])
+    pooled = parts.sum(axis=0)
+    (f1, p1), (f2, p2) = pooled[0], pooled[-1]
+    meals = parts.sum() / (2 * worlds * len(at))
     behaviour = (meals, (f2 - f1) / (f1 + f2 + 2), (p2 - p1) / (p1 + p2 + 2))
-    return (min(r["score"] for r in at), behaviour, min(r["learning"] for r in at), meals, halves,
+    return (min(r["score"] for r in at), behaviour, min(r["learning"] for r in at), meals, parts,
             float(np.mean([r["spikes"] for r in at])))
 
 
-def learned(halves, lives: int) -> float:
-    """The rise in food share from the first half of lives to the second; 0 unless both halves have enough meals."""
-    (f1, p1), (f2, p2) = halves
-    if min(f1 + p1, f2 + p2) < MIN_MEALS * lives:
-        return 0.0
-    return f2 / (f2 + p2) - f1 / (f1 + p1)
+def could_win(at, archive, task: str) -> bool:
+    """Whether a candidate lived at some tick sizes so far could still win its niche: its score can only fall as
+    tick sizes are added (it is the worse over them), so only if it already beats the niche's elite, or the niche is
+    empty."""
+    score, behaviour = combine(at, len(WORLDS))[:2]
+    key = niche(behaviour, task)
+    return key not in archive or score > archive[key]["score"]
 
 
-def niche(behaviour) -> tuple[int, int, int]:
+def niche(behaviour, task: str) -> tuple[int, int, int]:
     meals, food, poison = behaviour
     b = lambda x, lo, hi: int(np.clip((x - lo) / (hi - lo) * BINS, 0, BINS - 1))
-    return b(meals, 0, MAX_MEALS), b(food, -CHANGE, CHANGE), b(poison, -CHANGE, CHANGE)
+    return b(meals, 0, MAX_MEALS[task]), b(food, -CHANGE, CHANGE), b(poison, -CHANGE, CHANGE)
 
 
 def random_genome(rng) -> np.ndarray:
@@ -189,19 +191,16 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
             if extra:
                 genomes, extra = extra[:BATCH] + genomes[len(extra[:BATCH]):], extra[BATCH:]
             first = pool.map(live_at, [(g_, task, WORLDS, evolve.DTS[0]) for g_ in genomes])
-            racing = []                         # candidates whose first tick size already beats their niche's elite
-            for g_, r in zip(genomes, first):
-                key = niche(combine([r], len(WORLDS))[1])
-                if key not in archive or r["score"] > archive[key]["score"]:
-                    racing.append((g_, r))
-            rest = pool.map(live_at, [(g_, task, WORLDS, dt) for g_, _ in racing for dt in evolve.DTS[1:]])
-            others = len(evolve.DTS) - 1
+            racing = [(g_, [r]) for g_, r in zip(genomes, first)]
+            for dt in evolve.DTS[1:]:           # stage by stage: only candidates that could still win go on
+                racing = [(g_, at) for g_, at in racing if could_win(at, archive, task)]
+                more = pool.map(live_at, [(g_, task, WORLDS, dt) for g_, _ in racing])
+                racing = [(g_, at + [r]) for (g_, at), r in zip(racing, more)]
             raced += len(genomes)
             passed += len(racing)
-            for c, (genome, r) in enumerate(racing):
-                score, behaviour, learning, meals, _halves, rate = combine(
-                    [r] + rest[c * others:(c + 1) * others], len(WORLDS))
-                key = niche(behaviour)
+            for genome, at in racing:
+                score, behaviour, learning, meals, _parts, rate = combine(at, len(WORLDS))
+                key = niche(behaviour, task)
                 if key not in archive or score > archive[key]["score"]:
                     archive[key] = {"genome": genome, "score": score, "behaviour": behaviour,
                                     "learning": learning, "meals": meals, "spikes": rate}
@@ -213,7 +212,7 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
                 chunks = [VALIDATION[i::8] for i in range(8)]
                 results = pool.map(evaluate, [(learner["genome"], task, c, evolve.CHECK_DTS) for c in chunks])
                 pooled = sum(r[4] for r in results)
-                fresh = min(learned(h, 2 * len(VALIDATION)) for h in pooled)
+                fresh = min(evolve.learned(h, 2 * len(VALIDATION), MIN_MEALS) for h in pooled)
                 print(f"    validating the best learner ({learner['learning']:+.2f} on the fixed worlds): "
                       f"{fresh:+.2f} on fresh worlds", flush=True)
                 if fresh > validated:
@@ -235,7 +234,7 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("hours", type=float, nargs="?", default=8.0)
-    parser.add_argument("--task", choices=("taste", "choose"), default="taste")
+    parser.add_argument("--task", choices=("taste", "choose", "discriminate"), default="taste")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", nargs="+", default=[], help="saved rules to add to the first batch")
     args = parser.parse_args()

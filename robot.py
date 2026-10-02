@@ -12,11 +12,13 @@
     by TASTE_CENTRE, in their own variable t: up (t += taste) for food, down (t -= taste) for poison. The block reappears elsewhere. (The two
     taste strengths are body genes: evolution can choose where taste lands.)
   - tasks, shortest first: move (no blocks), approach (one block, which is food), taste (one red block, which is food
-    if red is food and poison otherwise), choose (one red, one blue, one of them food), forage (several of each)
+    if red is food and poison otherwise), choose (one red, one blue, one of them food), forage (several of each),
+    graze (several of each, all food, seen only near by: SHORT_REACH) and discriminate (as graze, one colour food)
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 
@@ -25,8 +27,10 @@ from numba import njit
 
 import cell
 
-TASKS = ("move", "approach", "taste", "choose", "forage")
-RED, BLUE = 0, 1
+TASKS = ("move", "approach", "taste", "choose", "forage", "graze", "discriminate")
+RED, BLUE, BOTH = 0, 1, 2               # which colour is food (BOTH: both are)
+SHORT_REACH = 4.0                       # how far colour carries in graze and discriminate: the nearest block dominates
+PARTS = 3                               # lives are counted in parts (thirds), to see how they change
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,10 @@ class World:
     def array(self) -> np.ndarray:
         return np.array([self.size, self.radius, self.reach, self.rate, self.push, self.kick, self.taste_contact,
                          self.taste_centre, self.dt])
+
+    def for_task(self, task: str) -> "World":
+        """This world as a task needs it: graze and discriminate see only near by."""
+        return dataclasses.replace(self, reach=SHORT_REACH) if task in ("graze", "discriminate") else self
 
     def ticks(self, duration: float) -> int:
         """How many ticks make up a duration of simulated time."""
@@ -166,7 +174,7 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
         for b in range(blocks.shape[1]):                       # eating
             dx, dy = blocks[l, b, 0] - pos[l, 0], blocks[l, b, 1] - pos[l, 1]
             if dx * dx + dy * dy < (radius + 0.5) ** 2:
-                good = blocks[l, b, 2] == food[l]
+                good = blocks[l, b, 2] == food[l] or food[l] == BOTH
                 counts[l, 0 if good else 1] += 1
                 facing, best = 0, -2.0
                 for s in range(len(angles)):
@@ -185,17 +193,17 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
 @njit(cache=True)
 def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, rng):
     """Whole lives of L robots, one per world, all with one rule; a, b and x are the working arrays (as cell.step).
-    Returns (food, poison, thruster firings, cell spikes) for each half of each life, shape (L, 2, 4). Moves pos and
-    blocks."""
+    Returns (food, poison, thruster firings, cell spikes) for each part of each life, shape (L, PARTS, 4). Moves pos
+    and blocks."""
     lives = pos.shape[0]
     start(a, neighbours.shape[0], rng)
-    counts = np.zeros((lives, 2, 4), dtype=np.int64)
+    counts = np.zeros((lives, PARTS, 4), dtype=np.int64)
     high = np.zeros((lives, len(angles)), dtype=np.bool_)
     fired = np.zeros((lives, len(angles)), dtype=np.bool_)
     for t in range(ticks):
-        half = 0 if t < ticks // 2 else 1
+        part = t * PARTS // ticks
         tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food,
-             counts[:, half], high, fired, rng, w)
+             counts[:, part], high, fired, rng, w)
         a, b = b, a
     return counts
 
@@ -208,8 +216,9 @@ def working(n: int, lives: int):
 
 def lifetimes(rule, geometry: Geometry, task: str, worlds, world: World, duration: float) -> dict:
     """One life of a duration of simulated time in each of worlds ((seed, food) pairs), all with one rule, run
-    together. Returns arrays over lives: counts (L, 2, 4) as `live`; start and end positions (L, 2); the blocks at the
+    together. Returns arrays over lives: counts (L, PARTS, 4) as `live`; start and end positions (L, 2); the blocks at the
     start and at the end (L, blocks, 3)."""
+    world = world.for_task(task)
     setups = [setup(task, s, food, world) for s, food in worlds]
     pos = np.array([p for p, _ in setups])
     blocks = np.array([b for _, b in setups])
@@ -232,7 +241,7 @@ def setup(task: str, seed_: int, food: int, world: World = World()):
         angle, distance = rng.uniform(0, 2 * math.pi), rng.uniform(6, 12)
         colour = food if task == "approach" else RED
         return pos, np.array([[pos[0] + distance * math.cos(angle), pos[1] + distance * math.sin(angle), colour]])
-    per_colour = 1 if task == "choose" else 4
+    per_colour = 1 if task == "choose" else 4               # forage, graze, discriminate: 4 of each
     blocks = []
     while len(blocks) < 2 * per_colour:
         xy = rng.uniform(world.radius, world.size - world.radius, 2)
@@ -246,6 +255,7 @@ class Robot:
 
     def __init__(self, rule: np.ndarray, task: str = "forage", seed_: int = 0, food: int = RED,
                  body: Body = Body(), world: World = World()):
+        world = world.for_task(task)
         self.rule, self.task, self.food, self.world = np.asarray(rule, dtype=DTYPE), task, food, world
         self.geometry = g = Geometry(body)
         pos, blocks = setup(task, seed_, food, world)

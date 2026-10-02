@@ -19,10 +19,15 @@ free; a wave through every cell is not:
   choose    for each world, lived once with red as food and once with blue: the worse of the two lives' score. A
             fixed colour preference scores below standing still (its wrong-colour life); learning scores best
   forage    as choose, with several blocks of each colour
+  graze     several blocks of each colour, all food, seen only near by: blocks eaten (a robot that gets around
+            among many blocks, before any learning is asked of it)
+  discriminate  as graze, one colour food and the other poison, lived once each way and long enough for tens of
+            tastes: the worse of the two lives' score over the last third of life only (what it ends up doing)
 
-For taste, choose and forage, learning is also scored directly: LEARN x (the food share of the world's meals in the
-second half of its lives - the share in the first half), when both halves have meals. Eating everything scores 0 on
-this, and a rule that learns even a little scores above it, so the search can find its way off that plateau.
+Lives are counted in thirds (robot.PARTS). For taste, choose, forage and discriminate, learning is also scored
+directly: LEARN x (the food share of the world's meals in the last third of its lives - the share in the first),
+when both have meals. Eating everything scores 0 on this, and a rule that learns even a little scores above it, so
+the search can find its way off that plateau.
 """
 
 from __future__ import annotations
@@ -39,7 +44,9 @@ import numpy as np
 import cell
 import robot
 
-DURATION = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forage": 3000}   # simulated time per life
+DURATION = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forage": 3000,   # simulated time per life
+            "graze": 2000, "discriminate": 6000}
+LEARNING_TASKS = ("taste", "choose", "forage", "discriminate")      # lived in pairs: each colour as food
 LIVES = 16
 POISON = 0.5
 FIRE_COST = 0.001
@@ -47,8 +54,8 @@ ACTIVITY = 30.0
 SPARSE_RATE = 0.01
 LEARN = 2.0
 VALIDATION = 64
-DTS = (1.0, 0.5)                # tick sizes every candidate lives at
-CHECK_DTS = (1.0, 0.5, 0.25)    # ... and validation, finer still
+DTS = (1.0, 0.5, 0.25)          # tick sizes every candidate lives at (the score is the worst over them)
+CHECK_DTS = (1.0, 0.5, 0.25, 0.125)     # ... and validation, finer still than any it was evolved at
 POPULATION = 32
 KERNELS = Path("kernels")
 
@@ -64,14 +71,17 @@ def geometry() -> robot.Geometry:
 
 
 def assess(rule: np.ndarray, task: str, seeds, dt: float = 1.0, world: robot.World = robot.World()) -> dict:
-    """Live a rule in each world at tick size dt, all lives together: for taste, choose and forage each world twice
-    (red as food, then blue), otherwise once (food alternating). Returns, per world, its value ("values": a life's
-    task score less the cost of its activity; for a pair of lives, their sum for taste and the worse for choose and
-    forage) and ("halves") the (food, poison) eaten in each half of its lives, (worlds, 2, 2); and the spike rate of
-    each life ("spikes")."""
+    """Live a rule in each world at tick size dt, all lives together: for the LEARNING_TASKS each world twice (red as
+    food, then blue), otherwise once (food alternating; graze: both). Returns, per world, its value ("values": a
+    life's task score less the cost of its activity; for a pair of lives, their sum for taste and the worse
+    otherwise) and ("parts") the (food, poison) eaten in each part of its lives, (worlds, PARTS, 2); and the spike rate
+    of each life ("spikes")."""
     world = dataclasses.replace(world, dt=dt)
-    pairs = task in ("taste", "choose", "forage")
-    worlds = [(s, f) for s in seeds for f in (robot.RED, robot.BLUE)] if pairs else [(s, s % 2) for s in seeds]
+    pairs = task in LEARNING_TASKS
+    if pairs:
+        worlds = [(s, f) for s in seeds for f in (robot.RED, robot.BLUE)]
+    else:
+        worlds = [(s, robot.BOTH if task == "graze" else s % 2) for s in seeds]
     r = robot.lifetimes(rule, geometry(), task, worlds, world, DURATION[task])
     values = []
     for i, counts in enumerate(r["counts"]):
@@ -84,27 +94,38 @@ def assess(rule: np.ndarray, task: str, seeds, dt: float = 1.0, world: robot.Wor
             distance = float(np.hypot(*(r["last"][i, 0, :2] - r["end"][i])))
             reference = float(np.hypot(*(r["first"][i, 0, :2] - r["start"][i]))) if food_eaten == 0 else 12.0
             value = float(food_eaten) + max(0.0, 1.0 - distance / reference)
+        elif task == "discriminate":
+            value = float(counts[-1, 0] - POISON * counts[-1, 1])
         else:
             value = float(food_eaten - POISON * poison)
         values.append(value - cost(counts, geometry().sheet.n, DURATION[task]))
     values = np.array(values)
-    halves = r["counts"][:, :, :2]
+    parts = r["counts"][:, :, :2]
     if pairs:
         values = values.reshape(-1, 2).sum(axis=1) if task == "taste" else values.reshape(-1, 2).min(axis=1)
-        halves = halves.reshape(-1, 2, 2, 2).sum(axis=1)
+        parts = parts.reshape(-1, 2, robot.PARTS, 2).sum(axis=1)
     spikes = np.array([spike_rate(c, geometry().sheet.n, DURATION[task]) for c in r["counts"]])
-    return {"values": values, "halves": halves, "spikes": spikes}
+    return {"values": values, "parts": parts, "spikes": spikes}
 
 
-def cost(per_half, cells: int, duration: float) -> float:
+def cost(counts, cells: int, duration: float) -> float:
     """The cost of a life's activity: its thruster firings, and its spike rate (per cell per unit of simulated time,
     so the same at any tick size) above SPARSE_RATE."""
-    return FIRE_COST * per_half[:, 2].sum() + ACTIVITY * max(0.0, spike_rate(per_half, cells, duration) - SPARSE_RATE)
+    return FIRE_COST * counts[:, 2].sum() + ACTIVITY * max(0.0, spike_rate(counts, cells, duration) - SPARSE_RATE)
 
 
-def spike_rate(per_half, cells: int, duration: float) -> float:
+def spike_rate(counts, cells: int, duration: float) -> float:
     """Spikes per cell per unit of simulated time."""
-    return per_half[:, 3].sum() / (cells * duration)
+    return counts[:, 3].sum() / (cells * duration)
+
+
+def learned(parts, lives: int, minimum: float = 0.0) -> float:
+    """The rise in food share from the first part of lives to the last; 0 unless both have more than minimum
+    meals per life."""
+    (f1, p1), (f2, p2) = parts[0], parts[-1]
+    if min(f1 + p1, f2 + p2) <= minimum * lives:
+        return 0.0
+    return f2 / (f2 + p2) - f1 / (f1 + p1)
 
 
 def score(rule: np.ndarray, task: str, seeds, dts=DTS) -> float:
@@ -115,10 +136,8 @@ def score(rule: np.ndarray, task: str, seeds, dts=DTS) -> float:
 def score_at(rule: np.ndarray, task: str, seeds, dt: float) -> float:
     a = assess(rule, task, seeds, dt)
     total = a["values"].sum()
-    if task in ("taste", "choose", "forage"):
-        for (f1, p1), (f2, p2) in a["halves"]:
-            if f1 + p1 and f2 + p2:
-                total += LEARN * (f2 / (f2 + p2) - f1 / (f1 + p1))
+    if task in LEARNING_TASKS:
+        total += LEARN * sum(learned(parts, 2) for parts in a["parts"])
     return float(total / len(seeds))
 
 
@@ -161,11 +180,11 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
             per = np.array(pool.map(_score_one, jobs)).reshape(len(CHECK_DTS), len(validation)).mean(axis=1)
             valid = float(per.min())
             learning = ""
-            if task in ("taste", "choose", "forage"):
-                eaten = np.sum(pool.map(_halves, [(mean, task, s) for s in validation]), axis=0)
+            if task in LEARNING_TASKS:
+                eaten = np.sum(pool.map(_parts, [(mean, task, s) for s in validation]), axis=0)
                 share = lambda f, p: f / max(1, f + p)
-                learning = (f"  food share: first half {share(*eaten[0]):.0%} of {eaten[0].sum()}, "
-                            f"second half {share(*eaten[1]):.0%} of {eaten[1].sum()}")
+                learning = (f"  food share: first third {share(*eaten[0]):.0%} of {eaten[0].sum()}, "
+                            f"last third {share(*eaten[-1]):.0%} of {eaten[-1].sum()}")
             if valid > best:
                 best = valid
                 (KERNELS / f"{task}.json").write_text(json.dumps(
@@ -177,10 +196,10 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
                   flush=True)
 
 
-def _halves(args):
-    """(food, poison) in each half, summed over a world's red-food and blue-food lives."""
+def _parts(args):
+    """(food, poison) in each part of life, summed over a world's red-food and blue-food lives."""
     rule, task, seed = args
-    return assess(rule, task, [seed])["halves"][0]
+    return assess(rule, task, [seed])["parts"][0]
 
 
 def _score_one(args):

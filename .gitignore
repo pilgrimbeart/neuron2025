@@ -164,4 +164,4 @@ videos/
 patterns/recent.json
 control_in.txt
 control_out.log
-kernels/*.pkl
+kernels/**/*.pkl

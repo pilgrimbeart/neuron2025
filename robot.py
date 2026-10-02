@@ -1,6 +1,7 @@
 """A round robot run by a disc of identical cells (cell.py), in a walled arena of red and blue blocks.
 
-  - sensors sit evenly round the rim, each a red and a blue input cell either side of an actuator cell; a sensor sees
+  - sensors sit evenly round the rim, each a red and a blue input cell either side of an actuator cell (set in from
+    the rim, with the group's taste cell between it and the edge); a sensor sees
     colour in the direction it faces (by cosine, fading with distance), and its input cell is kicked (v += KICK) at
     random, at RATE x what it sees per unit time (a Poisson process): sparse pulses, never levels
   - time: each tick is DT units of simulated time. Rates are per unit time and kicks, tastes and pushes are
@@ -35,7 +36,9 @@ PARTS = 3                               # lives are counted in parts (thirds), t
 
 @dataclass(frozen=True)
 class Body:
-    grid: int = 12              # the disc of cells fits a grid x grid square
+    grid: int = 24              # the disc of cells fits a grid x grid square
+    spacing: float = 3.0        # how far round the rim each input cell is from its thruster's line, in cells
+    depth: float = 3.0          # how far in from the rim each thruster is (its taste cell is 1 in, by the rim)
     sensors: int = 6            # each with a red and a blue input cell and an actuator between them
 
 
@@ -71,7 +74,7 @@ class Geometry:
     def __init__(self, body: Body = Body()):
         n = body.grid
         c = (n - 1) / 2
-        rim = n / 2 - 1
+        rim = n / 2 - 1.1               # just inside the half-cell positions, so rounding never ties
         self.size = n
         inside = lambda x, y: 0 <= x < n and 0 <= y < n and (x - c) ** 2 + (y - c) ** 2 <= (n / 2) ** 2
         self.xy = np.array([(x, y) for x in range(n) for y in range(n) if inside(x, y)])
@@ -81,12 +84,14 @@ class Geometry:
         at = lambda angle, r: index[(int(round(c + r * math.cos(angle))), int(round(c + r * math.sin(angle))))]
         s = body.sensors
         self.angles = np.array([2 * math.pi * i / s for i in range(s)])
-        offset = 1.5 / rim
+        offset = body.spacing / rim
         self.inputs = np.array([[at(a - offset, rim), at(a + offset, rim)] for a in self.angles])    # (s, colour)
-        self.outputs = np.array([at(a, rim) for a in self.angles])                                  # (s,)
+        self.outputs = np.array([at(a, rim - body.depth) for a in self.angles])                     # (s,)
         self.taste = np.array([at(a, rim - 1) for a in self.angles])                                # (s,)
         m = int(c)
         self.centre = np.array([index[p] for p in ((m, m), (m + 1, m), (m, m + 1), (m + 1, m + 1))])
+        special = np.concatenate([self.inputs.ravel(), self.outputs, self.taste, self.centre])
+        assert len(set(special.tolist())) == len(special), "two special cells of the body are the same cell"
 
     def grid(self, values: np.ndarray) -> np.ndarray:
         """Per-cell values laid out on the square grid (0 outside the disc), for drawing."""

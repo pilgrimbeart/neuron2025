@@ -10,7 +10,8 @@ best so far it is saved to kernels/TASK.json.
 
 Fitness per task (averaged over lives), less the cost of activity (`cost`): FIRE_COST per thruster firing, and
 ACTIVITY x how far the sheet's spike rate (spikes per cell per unit time) is above SPARSE_RATE. Sparse activity is
-free; a wave through every cell is not:
+free; a wave through every cell is not. In move and approach activity is free (ACTIVITY_FREE): with it charged, the
+easiest improvement on a moving robot is to go quiet, not to approach:
   move      how far the robot ends from where it started, in robot radii
   approach  blocks eaten, plus how much nearer the one it is heading for it ended than it started (0..1)
   taste     for each world, lived once with its one (red) block as food and once as poison: the sum of the two
@@ -51,6 +52,7 @@ LIVES = 16
 POISON = 0.5
 FIRE_COST = 0.001
 ACTIVITY = 30.0
+ACTIVITY_FREE = ("move", "approach")    # getting the robot going comes first: activity costs from graze on
 SPARSE_RATE = 0.01
 LEARN = 2.0
 VALIDATION = 64
@@ -98,7 +100,7 @@ def assess(rule: np.ndarray, task: str, seeds, dt: float = 1.0, world: robot.Wor
             value = float(counts[-1, 0] - POISON * counts[-1, 1])
         else:
             value = float(food_eaten - POISON * poison)
-        values.append(value - cost(counts, geometry().sheet.n, DURATION[task]))
+        values.append(value - (0.0 if task in ACTIVITY_FREE else cost(counts, geometry().sheet.n, DURATION[task])))
     values = np.array(values)
     parts = r["counts"][:, :, :2]
     if pairs:

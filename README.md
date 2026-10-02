@@ -17,15 +17,19 @@ Each cell holds four numbers, each kept within −1..1:
 
 Every tick, each variable moves by its rate (0.1, 0.1, 0.01, 0.1) × dt times a quadratic polynomial of the cell's own variables and the mean of each over its neighbours (up to 8). dt is the simulated time per tick (`World.dt`, 1 by default). A rule is those polynomials' coefficients (180 of them). The aim is for most to end up zero, so that the rule can be said in a sentence or two (`cell.describe`).
 
-A cell knows only its own variables and its neighbours'. The sheet is a list of cells with neighbour lists, and the body decides who neighbours whom.
+A cell knows only its own variables and its neighbours'. The sheet is a list of cells with neighbour lists, and the body decides who neighbours whom. For speed, a genome's lives are stepped together, and the rule is written out from `TERMS` as one expression per variable so that it vectorises; the physics is the same.
 
 ## The robot (`robot.py`)
 
-- **The brain** is a disc of cells on a 12×12 grid.
-- **Six sensor groups** sit round the rim, each a red and a blue input cell with a thruster between them.
-- **Sensing:** a sensor sees colour in the direction it faces, fading with distance. Each tick its input cell is kicked with a probability that rises with what it sees: sparse pulses, never levels.
+- **The brain** is a disc of 448 cells on a 24×24 grid.
+- **Six sensor groups** sit round the rim, spaced out so that structure can form around them. Each group has:
+  - a red and a blue input cell, on the rim, 3 cells either side;
+  - a taste cell, by the rim between them;
+  - a thruster, 3 cells in from the rim.
+- **Sensing:** a sensor sees colour in the direction it faces, fading with distance. Its input cell is kicked at random at a rate that rises with what it sees (a Poisson process): sparse pulses, never levels.
 - **Moving:** each thruster pushes the robot away from its own side as its v rises through 0.5. So approaching what one side sees needs the far side's thruster, and signals must cross the disc.
-- **Eating:** touching a block eats it. Taste kicks t in the cell beside the sensor group that touched it, and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
+- **Eating:** touching a block eats it. Taste kicks t in the taste cell of the sensor group facing the block, and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
+- **Lives** start from near-blank noise (±0.1 in every variable). Each life has its own random stream, so a world's food and poison lives are identical until the first taste. Counts are kept per third of the life.
 
 Tasks, shortest first:
 
@@ -36,66 +40,77 @@ Tasks, shortest first:
 | `taste` | one red block, food in one life and poison in the other |
 | `choose` | one red and one blue block, one of them food |
 | `forage` | several of each |
+| `graze` | 4 of each, all food, seen only near by (so the nearest dominates) |
+| `discriminate` | as graze, one colour food and the other poison; long lives (tens of tastes of each) |
 
 ## Evolving (`evolve.py`, `mapelites.py`)
 
+The curriculum, each stage starting from the last:
+
 ```bash
 python evolve.py move 60
-python evolve.py approach 500 --from kernels/move.json --sigma 0.5
-python evolve.py taste 800 --from kernels/approach.json --sigma 0.02 --sigma-m 0.5 --sparsity 0.001
-python mapelites.py 8 --task taste            # 8 hours; --resume to continue
+python evolve.py approach 400 --from kernels/move.json --sigma 0.5 --sparsity 0.001
+python evolve.py graze 300 --from kernels/approach.json --sigma 0.1 --sparsity 0.001
+python mapelites.py 10 --task discriminate --seed kernels/graze.json     # hours; --resume to continue
 ```
 
-Both score every candidate at two tick sizes (dt 1 and 0.5) and take the worse, so that no rule can rely on the tick size, and they validate at 0.25 as well. Both charge for activity: each thruster firing, and the sheet's spike rate above one spike per cell per 100 units of time, so sparse activity is favoured.
+**Scoring, common to both:**
+- **Tick sizes:** every candidate is scored at dt 1, 0.5 and 0.25, taking the worst, so no rule can rely on the tick size. Validation checks 0.125 too, on fresh worlds.
+- **Activity costs:** each thruster firing, and the sheet's spike rate above one spike per cell per 100 units of time. Sparse activity is favoured. Move and approach are exempt (getting the robot going comes first).
+- **Learning tasks** (taste, choose, discriminate) are lived once with each colour as food. They're scored on the worse of the two lives, plus a bonus for any rise in food share from the first third of a life to the last. Discriminate scores only the last third, so gradual learning gets credit.
 
-- **`evolve.py`** climbs one hill with CMA-ES. Each generation it scores the rule at the search's mean on fixed validation worlds, and saves it to `kernels/TASK.json` whenever it beats the best so far.
-- **`mapelites.py`** searches widely. It keeps the best rule for each kind of behaviour (meals per life, and how eating food and eating poison change during a life), so stepping stones towards learning survive even when they score below "eat everything". It writes these files, and overwrites them as it goes:
-  - `kernels/map_TASK.pkl`: the archive;
-  - `kernels/map_TASK.json`: the best-scoring rule;
-  - `kernels/map_TASK_learner.json`: the best learner on its own worlds;
-  - `kernels/map_TASK_validated.json`: the best learner that also learns on fresh worlds, at every tick size.
+**The two programs:**
+- **`evolve.py`** climbs one hill with CMA-ES. Each generation it validates the search's mean, and saves it to `kernels/TASK.json` whenever it beats the best so far.
+- **`mapelites.py`** searches widely. It keeps the best rule for each kind of behaviour (meals per life, and how eating food and eating poison change from the first third of a life to the last), so stepping stones towards learning survive even when they score below "eat everything".
+  - **Racing:** tick sizes are added one at a time, coarsest first, and only for candidates that could still beat their niche's best. Most candidates only ever live at dt 1.
+  - **Seeding:** `--seed` adds saved rules (kernels, with small variations, or a whole archive `.pkl`).
+  - **Outputs:** `kernels/map_TASK.pkl` (the archive), `map_TASK.json` (the best score), `map_TASK_learner.json` (the best learner on its own worlds) and `map_TASK_validated.json` (the best learner on fresh worlds, at every tick size).
 
-  `--seed` adds saved rules to the first batches: kernels (with small variations) or a whole archive (`.pkl`).
-
-Rules in `kernels/`:
-
-| File | What it is |
-|---|---|
-| `move.json`, `approach.json` | the move and approach rules, at every tick size; approach eats about 3 blocks per life |
-| `robust_learner.json` | the first rule that learns the taste task at every tick size; dense (travelling waves, about 6 spikes per cell per 100) |
-| `sparse_robust_learner.json` | the best so far: learns the taste task at every tick size, sparsely (about 2.6 spikes per cell per 100; pulse trains rather than broad waves) |
-| `dense_scorer.json` | the best taste score before activity was charged for |
-| `map_taste*.json` | outputs of the latest MAP-Elites run |
+**Rules in `kernels/`:** `move.json`, `approach.json` and so on are the current curriculum's, for the 24×24 body. `kernels/grid12/` holds the rules and search outputs from the earlier 12×12 body (commit `1dd377d` and before), including the taste learners. They don't work in the current body.
 
 ## Watching (`app.py`)
 
 ```bash
-python app.py sparse_robust_learner -c "task taste" -c "view t" -c "speed 4"
+python app.py approach -c "task approach" -c "speed 1" -c "pause"     # then type resume
 ```
 
 The screen is in four quarters:
-- **Top-left, the cells:** v green when positive and red when negative, m (or w) in blue. Input cells are outlined red and blue, thrusters yellow, taste cells white.
-- **Top-right, the world:** food is ringed in white.
+- **Top-left, the cells:**
+  - v green when positive and red when negative; m, w or t in blue (`view`);
+  - special cells are lettered: R and B (red and blue inputs), M (thrusters), t (taste cells), c (centre taste cells);
+  - hovering over a cell describes it in the top-right corner, with its current variables.
+- **Top-right, the world:** food is ringed in white. The panel shows meals, thruster firings, and spikes per cell per 100 units of time.
 - **Bottom-left:** each thruster's v over time.
 - **Bottom-right:** the console. Commands can also be written to `control_in.txt`, and output goes to `control_out.log`.
 
-Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `view m|w|t`, `rule`, `quit`. The world panel shows meals, thruster firings and spikes per cell per 100 units of time.
+Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `view m|w|t`, `rule`, `quit`.
 
 ## Where things stand
 
-- **Works:** move and approach evolve in minutes, at every tick size.
-- **A one-bit switch, via MAP-Elites:** in the taste task (one red block, food or poison), one bite decides it. After poison the robot stays away, after food it keeps eating, at every tick size and sparsely (`sparse_robust_learner.json`, with pulse trains rather than broad waves). But what it learns is a switch (less drawn to blocks after a bad taste), not an association: in forage it eats less of both colours.
-- **Not yet:** learning which colour is food. One night of MAP-Elites on choose found nothing that held up. Each life held only 1–3 meals, so learning had to be one-shot.
+**Achieved on the 12×12 sheet:**
+- move, approach and graze, at every tick size;
+- a one-bit switch: in the taste task (one red block), one bite decides it, and after poison the robot keeps away. This works at every tick size, and sparsely (pulse trains rather than broad waves). But it's sensitisation, not association: in forage it eats less of both colours.
+
+**Not found:** learning which colour is food, in choose (1–3 meals per life, so one-shot) or in discriminate (tens of tastes per life). With six sensor groups crammed together and cells that see only their neighbours' mean, there seemed to be no room for structure that tells red from blue.
+
+**Now, on the 24×24 sheet** (why and what happened: `LESSONS.md`, "From 12×12 to 24×24"): the curriculum is running again from scratch.
+- **Move** is done.
+- **Approach** is in progress, after two false starts: the activity cost and the sparsity penalty had to be scaled for the bigger sheet.
+- **Circuits:** early rules already build lasting, circuit-like structure (wires and junctions) from the starting noise, similar but not identical from life to life. The small sheet never did that.
 
 ## Next steps
 
-1. **Graze, then discriminate:** a world built for many encounters (a shorter sight range so the nearest block dominates, several blocks of each colour, longer lives), giving tens of tastes per life. First graze: both colours food, score meals per life, to get a robot that moves well among many blocks. Then discriminate: one colour food, the other poison; score the last third of each life and its improvement on the first, so gradual learning gets credit.
-2. **Meta-structures:** check whether the sparse learner's pulses pass through each other or annihilate; then try discriminate on a bigger sheet (about 20×20, sensors and thrusters spaced out) to give room for glider-like structures (`LESSONS.md`, "Cells, variables and meta-structures").
-3. **Organism-wide memory:** spread what one side learned to the others.
-4. **Make rules describable:** prune terms one by one while the score holds.
-5. **Side-quest, time:** the medium is continuous (rules mustn't depend on the tick: no global clock). Two alternatives are worth trying later. One is rewarding rules whose sheet settles into a stable, low-activity oscillation that emerges from the cells, which is allowed: it is a property of the medium, not of the tick. The other is a synchronous medium like a cellular automaton (score at dt 1 only), where the tick is a real global clock rules may use, as in Life or Rule 110: cheaper, but less biological.
-6. **Parked, in git history:** a fuller cell (each neighbour's variables as separate inputs, every product of two inputs: 2,812 coefficients), a sheet that grows from one central cell along a square spiral, and an untested PyTorch version of the simulation for running many lives at once on a GPU. It is the commit "Parked: ..." just before "Revert ...": `git revert` the revert to bring it back.
-7. **Speed:** a genome's lives step together, and the rule is written out from TERMS so it vectorises; with racing (dt 1 first, dt 0.5 only for candidates that could win), MAP-Elites runs about 5–6× faster than before (`LESSONS.md`). Renting a GPU only pays once the simulation is batched across genomes too (the parked PyTorch version).
+1. **Finish the curriculum on 24×24** (approach, graze, discriminate), and see whether the extra room allows colour learning.
+2. **Understand the circuits:** how much they vary across seeds, whether they settle, which variables form them, and whether signals travel along them from sensors to thrusters.
+3. **If colour learning still fails,** the next candidates:
+   - **The fuller cell (parked):** each neighbour's variables as separate inputs, so a cell can tell which neighbour fired.
+   - **An even bigger sheet:** more room still for structure (`LESSONS.md`, "Cells, variables and meta-structures").
+4. **Organism-wide memory:** spread what one side learned to the others.
+5. **Make rules describable:** prune terms one by one while the score holds.
+6. **Side-quest, time:** the medium is continuous (no global clock). Two alternatives are worth trying later:
+   - rewarding sheets that settle into a stable, low-activity oscillation emerging from the cells (allowed: a property of the medium, not of the tick);
+   - a synchronous medium like a cellular automaton (score at dt 1 only), as in Life or Rule 110: cheaper, but less biological.
+7. **Parked, in git history:** the fuller cell above (2,812 coefficients), a sheet that grows from one central cell along a square spiral, and an untested PyTorch version of the simulation for running many lives at once on a GPU. It's the commit "Parked: ..." just before "Revert ...": `git revert` the revert to bring it back. A GPU only pays once the simulation is batched across genomes too.
 
 ## Requirements
 

@@ -2,7 +2,8 @@
 
     python app.py [KERNEL] [-c COMMAND]...
 
-Four quarters: the cells (top left: v green when positive, red when negative; m, or w, blue), the world (top right), each
+Four quarters: the cells (top left: v green when positive, red when negative; m, or w, blue; special cells lettered,
+and the cell under the mouse described top right), the world (top right), each
 actuator's v over time (bottom left, the firing level dotted), and a console (bottom right). Commands are typed at the
 console or written to control_in.txt; output also goes to control_out.log.
 """
@@ -35,6 +36,23 @@ HELP = """commands:
   rule                print the rule
   quit"""
 TICKS_PER_S = 10            # at speed 1
+
+
+DIRECTIONS = ("E", "SE", "SW", "W", "NW", "NE")     # the sensor groups' directions, as on screen (y downwards)
+
+
+def roles(g) -> dict:
+    """What each special cell of the sheet is: {cell: (letter, lines describing it)}."""
+    out = {}
+    for s in range(len(g.angles)):
+        side = f"sensor group {s}, facing {DIRECTIONS[s]}" if len(g.angles) == 6 else f"sensor group {s}"
+        out[g.inputs[s, 0]] = ("R", ["red input", side, "kicked as it sees red"])
+        out[g.inputs[s, 1]] = ("B", ["blue input", side, "kicked as it sees blue"])
+        out[g.outputs[s]] = ("M", ["thruster", side, "firing pushes the robot away"])
+        out[g.taste[s]] = ("t", ["taste cell", side, "t kicked by a bite on this side"])
+    for i in g.centre:
+        out[i] = ("c", ["centre taste cell", "t kicked by every bite"])
+    return out
 
 
 class App:
@@ -107,6 +125,7 @@ class App:
         world = dataclasses.replace(evolve.load_world(path), dt=self.dt)
         self.robot = robot.Robot(evolve.load(path), self.task, self.seed, self.food, world=world)
         self.trace = []
+        self.roles = roles(self.robot.geometry)
         self.say(f"kernel {path.stem}, task {self.task}, {'red' if self.food == robot.RED else 'blue'} is food, "
                  f"seed {self.seed}, dt {self.dt}")
 
@@ -124,13 +143,22 @@ class App:
         surface = pygame.surfarray.make_surface((rgb * 255).astype(np.uint8))
         self.screen.blit(pygame.transform.scale(surface, (side, side)), (x0, y0))
         scale = side / g.size
-        box = lambda i, rgb_, width: pygame.draw.rect(
-            self.screen, rgb_, (x0 + g.xy[i, 0] * scale, y0 + g.xy[i, 1] * scale, scale, scale), width=width)
-        for s in range(len(g.angles)):
-            box(g.inputs[s, 0], (255, 80, 80), 2)
-            box(g.inputs[s, 1], (80, 120, 255), 2)
-            box(g.outputs[s], (255, 255, 0), 2)
-            box(g.taste[s], (255, 255, 255), 1)
+        font = pygame.font.Font(pygame.font.match_font("couriernew", bold=True), max(10, int(scale * 0.6)))
+        for i, (letter, _) in self.roles.items():            # a letter in each special cell (not only a colour)
+            x, y = x0 + g.xy[i, 0] * scale, y0 + g.xy[i, 1] * scale
+            pygame.draw.rect(self.screen, (255, 255, 255), (x, y, scale, scale), width=1)
+            text = font.render(letter, True, (255, 255, 255), (0, 0, 0))
+            self.screen.blit(text, (x + (scale - text.get_width()) / 2, y + (scale - text.get_height()) / 2))
+        mx, my = pygame.mouse.get_pos()                     # the cell under the mouse, described top right
+        gx, gy = int((mx - x0) // scale), int((my - y0) // scale)
+        under = [i for i, (cx, cy) in enumerate(g.xy) if (cx, cy) == (gx, gy)]
+        if under:
+            i = under[0]
+            values = "  ".join(f"{name} {r.state[a, i]:+.2f}" for a, name in enumerate(cell.VARIABLES))
+            lines = [f"cell ({gx}, {gy})"] + self.roles.get(i, ("", ["ordinary cell"]))[1] + [values]
+            for k, line in enumerate(lines):
+                text = self.font.render(line, True, (255, 255, 255), (0, 0, 0))
+                self.screen.blit(text, (x0 + side - text.get_width() - 4, y0 + 4 + 18 * k))
 
     def draw_world(self, x0, y0, w, h) -> None:
         r, world = self.robot, self.robot.world
@@ -167,7 +195,7 @@ class App:
             level = mid - cell.FIRE_LEVEL * band * 0.45
             for x in range(int(x0), int(x0 + w), 8):
                 self.screen.set_at((x, int(level)), (90, 90, 90))
-            points = [(x0 + i * w / 400, mid - v[s] * band * 0.45) for i, v in enumerate(self.trace[-400:])]
+            points = [(x0 + i * w / 400, mid - float(v[s]) * band * 0.45) for i, v in enumerate(self.trace[-400:])]
             if len(points) > 1:
                 pygame.draw.lines(self.screen, (255, 255, 0), False, points, 1)
             self.screen.blit(self.font.render(f"m{s}", True, (160, 160, 160)), (x0 + 4, mid - 8))

@@ -17,7 +17,9 @@ Commit and push only when the user says "Push".
 - The goal is emergent learning: a sheet of identical cells, running one evolved local rule, that learns within its lifetime. The final test is the robot learning which colour is food. See the README.
 - `cell.py` is the whole of how a cell behaves; the rule itself is found by evolution (`evolve.py`, `mapelites.py`) and saved in `kernels/`. Keep `cell.py` small, and aim for evolved rules that can be said in a sentence or two.
 - Everything outside the cell is body and world (`robot.py`). Local behaviour only, no global god: inputs are sparse kicks (pulses), never continuous levels; cells must never know the sheet's size or position beyond what their neighbours tell them; and learning must work with events in random order, not a crafted training sequence.
-- Check evolved results on fresh worlds, not just the worlds they were evolved in, before reporting them; fixed evaluation worlds let flukes in.
+- Check evolved results on fresh worlds and at other tick sizes, not just the worlds they were evolved in, before reporting them; fixed evaluation worlds and a fixed tick let flukes and artefacts in.
+- After editing `cell.py`, delete Numba's caches (`find . -path ./.venv -prune -o -name "*.nb[ic]" -print -delete`): code cached in `robot.py` still contains the old `cell.step` otherwise.
+- When the body or the sheet size changes, evolved rules no longer apply: keep them aside (as `kernels/grid12/`) and evolve again from the start of the curriculum. Penalties that depend on the number of cells or the size of a rule may need scaling.
 - Measure, and trace failures to a cause before fixing them. Record findings and dead ends in `LESSONS.md`.
 - Before reporting a behaviour as working, also show it live: drive the running app (`python app.py`) through the control channel (`control_in.txt` / `control_out.log`) so the user can watch.
 - The hand-designed system (excitable medium, gates, `verify.py`) is in `old_manual_gates/` and still runs from there (`cd old_manual_gates && python neuron.py`); its old rules (shared `DEFAULT_PARAMS`, `verify.py` before committing) apply only to changes there.

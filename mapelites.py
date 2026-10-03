@@ -4,7 +4,7 @@ than only the best rule.
     python mapelites.py [HOURS] [--task taste|choose] [--resume] [--seed KERNEL...]
 
 A genome is a rule (cell.py) and two body genes: how strongly a taste kicks the cell where the block touched and
-the middle of the disc (robot.World.taste_contact, taste_centre; 0..TASTE_MAX). Each genome lives in WORLDS fixed
+the middle of the disc (robot.World.taste_contact, taste_centre; 0..TASTE_MAX). Each genome lives in WORLDS (or TASK_WORLDS[task]) fixed
 worlds, each once with red as food and once with blue (in taste, the one red block is food, then poison), so every
 evaluation is deterministic and an elite can't hold its place by luck; and it lives them at each tick size in
 evolve.DTS, scoring the worse, so that no rule can rely on the tick size.
@@ -49,6 +49,7 @@ import evolve
 import robot
 
 WORLDS = range(32)
+TASK_WORLDS = {"discriminate": range(16)}     # long lives (about 100 meals) are less noisy: fewer worlds suffice
 VALIDATION = range(10**6, 10**6 + 64)
 VALIDATE_EVERY = 50
 MIN_MEALS = 0.25
@@ -96,11 +97,11 @@ def combine(at, worlds: int):
             float(np.mean([r["spikes"] for r in at])))
 
 
-def could_win(at, archive, task: str) -> bool:
+def could_win(at, archive, task: str, worlds: int) -> bool:
     """Whether a candidate lived at some tick sizes so far could still win its niche: its score can only fall as
     tick sizes are added (it is the worse over them), so only if it already beats the niche's elite, or the niche is
     empty."""
-    score, behaviour = combine(at, len(WORLDS))[:2]
+    score, behaviour = combine(at, worlds)[:2]
     key = niche(behaviour, task)
     return key not in archive or score > archive[key]["score"]
 
@@ -169,6 +170,7 @@ def from_kernels(paths, rng) -> list[np.ndarray]:
 
 
 def run(hours: float, task: str, resume: bool, seeds=()) -> None:
+    worlds = TASK_WORLDS.get(task, WORLDS)
     evolve.KERNELS.mkdir(exist_ok=True)
     store = evolve.KERNELS / f"map_{task}.pkl"
     archive, evaluations = {}, 0
@@ -190,16 +192,16 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
                 genomes = [offspring(archive, rng) for _ in range(BATCH)]
             if extra:
                 genomes, extra = extra[:BATCH] + genomes[len(extra[:BATCH]):], extra[BATCH:]
-            first = pool.map(live_at, [(g_, task, WORLDS, evolve.DTS[0]) for g_ in genomes])
+            first = pool.map(live_at, [(g_, task, worlds, evolve.DTS[0]) for g_ in genomes])
             racing = [(g_, [r]) for g_, r in zip(genomes, first)]
             for dt in evolve.DTS[1:]:           # stage by stage: only candidates that could still win go on
-                racing = [(g_, at) for g_, at in racing if could_win(at, archive, task)]
-                more = pool.map(live_at, [(g_, task, WORLDS, dt) for g_, _ in racing])
+                racing = [(g_, at) for g_, at in racing if could_win(at, archive, task, len(worlds))]
+                more = pool.map(live_at, [(g_, task, worlds, dt) for g_, _ in racing])
                 racing = [(g_, at + [r]) for (g_, at), r in zip(racing, more)]
             raced += len(genomes)
             passed += len(racing)
             for genome, at in racing:
-                score, behaviour, learning, meals, _parts, rate = combine(at, len(WORLDS))
+                score, behaviour, learning, meals, _parts, rate = combine(at, len(worlds))
                 key = niche(behaviour, task)
                 if key not in archive or score > archive[key]["score"]:
                     archive[key] = {"genome": genome, "score": score, "behaviour": behaviour,

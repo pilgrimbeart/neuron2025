@@ -23,7 +23,8 @@ easiest improvement on a moving robot is to go quiet, not to approach:
   graze     several blocks of each colour, all food, seen only near by: blocks eaten (a robot that gets around
             among many blocks, before any learning is asked of it)
   discriminate  as graze, one colour food and the other poison, lived once each way and long enough for tens of
-            tastes: the worse of the two lives' score over the last third of life only (what it ends up doing)
+            tastes: the worse of the two lives' score over the last third of life only (what it ends up doing),
+            with activity charged over that third too
 
 Lives are counted in thirds (robot.PARTS). For taste, choose, forage and discriminate, learning is also scored
 directly: LEARN x (the food share of the world's meals in the last third of its lives - the share in the first),
@@ -48,14 +49,14 @@ import robot
 DURATION = {"move": 400, "approach": 1000, "taste": 2000, "choose": 2000, "forage": 3000,   # simulated time per life
             "graze": 2000, "discriminate": 6000}
 LEARNING_TASKS = ("taste", "choose", "forage", "discriminate")      # lived in pairs: each colour as food
-LIVES = 16
+LIVES = 8
 POISON = 0.5
 FIRE_COST = 0.001
 ACTIVITY = 30.0
 ACTIVITY_FREE = ("move", "approach")    # getting the robot going comes first: activity costs from graze on
 SPARSE_RATE = 0.01
 LEARN = 2.0
-VALIDATION = 64
+VALIDATION = 32
 DTS = (1.0, 0.5, 0.25)          # tick sizes every candidate lives at (the score is the worst over them)
 CHECK_DTS = (1.0, 0.5, 0.25, 0.125)     # ... and validation, finer still than any it was evolved at
 POPULATION = 32
@@ -100,7 +101,13 @@ def assess(rule: np.ndarray, task: str, seeds, dt: float = 1.0, world: robot.Wor
             value = float(counts[-1, 0] - POISON * counts[-1, 1])
         else:
             value = float(food_eaten - POISON * poison)
-        values.append(value - (0.0 if task in ACTIVITY_FREE else cost(counts, geometry().sheet.n, DURATION[task])))
+        if task in ACTIVITY_FREE:
+            charge = 0.0
+        elif task == "discriminate":                     # charged over the part of life that is scored
+            charge = cost(counts[-1:], geometry().sheet.n, DURATION[task] / robot.PARTS)
+        else:
+            charge = cost(counts, geometry().sheet.n, DURATION[task])
+        values.append(value - charge)
     values = np.array(values)
     parts = r["counts"][:, :, :2]
     if pairs:

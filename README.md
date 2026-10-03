@@ -21,11 +21,11 @@ A cell knows only its own variables and its neighbours'. The sheet is a list of 
 
 ## The robot (`robot.py`)
 
-- **The brain** is a disc of 448 cells on a 24×24 grid.
+- **The brain** is a disc of 1,804 cells on a 48×48 grid.
 - **Six sensor groups** sit round the rim, spaced out so that structure can form around them. Each group has:
-  - a red and a blue input cell, on the rim, 3 cells either side;
+  - a red and a blue input cell, on the rim, 6 cells either side;
   - a taste cell, by the rim between them;
-  - a thruster, 3 cells in from the rim.
+  - a thruster, 6 cells in from the rim.
 - **Sensing:** a sensor sees colour in the direction it faces, fading with distance. Its input cell is kicked at random at a rate that rises with what it sees (a Poisson process): sparse pulses, never levels.
 - **Moving:** each thruster pushes the robot away from its own side as its v rises through 0.5. So approaching what one side sees needs the far side's thruster, and signals must cross the disc.
 - **Eating:** touching a block eats it. Taste kicks t in the taste cell of the sensor group facing the block, and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
@@ -49,8 +49,8 @@ The curriculum, each stage starting from the last:
 
 ```bash
 python evolve.py move 60
-python evolve.py approach 400 --from kernels/move.json --sigma 0.5 --sparsity 0.001
-python evolve.py graze 300 --from kernels/approach.json --sigma 0.1 --sparsity 0.001
+python evolve.py approach 250 --from kernels/move.json --sigma 0.5 --sparsity 0.001
+python evolve.py graze 150 --from kernels/approach.json --sigma 0.1 --sparsity 0.001
 python mapelites.py 10 --task discriminate --seed kernels/graze.json     # hours; --resume to continue
 ```
 
@@ -60,13 +60,15 @@ python mapelites.py 10 --task discriminate --seed kernels/graze.json     # hours
 - **Learning tasks** (taste, choose, discriminate) are lived once with each colour as food. They're scored on the worse of the two lives, plus a bonus for any rise in food share from the first third of a life to the last. Discriminate scores only the last third, so gradual learning gets credit.
 
 **The two programs:**
-- **`evolve.py`** climbs one hill with CMA-ES. Each generation it validates the search's mean, and saves it to `kernels/TASK.json` whenever it beats the best so far.
+- **`evolve.py`** climbs one hill with CMA-ES. Each candidate lives in 8 worlds. Each generation it validates the search's mean on 32 fresh worlds, and saves it to `kernels/TASK.json` whenever it beats the best so far.
 - **`mapelites.py`** searches widely. It keeps the best rule for each kind of behaviour (meals per life, and how eating food and eating poison change from the first third of a life to the last), so stepping stones towards learning survive even when they score below "eat everything".
   - **Racing:** tick sizes are added one at a time, coarsest first, and only for candidates that could still beat their niche's best. Most candidates only ever live at dt 1.
   - **Seeding:** `--seed` adds saved rules (kernels, with small variations, or a whole archive `.pkl`).
   - **Outputs:** `kernels/map_TASK.pkl` (the archive), `map_TASK.json` (the best score), `map_TASK_learner.json` (the best learner on its own worlds) and `map_TASK_validated.json` (the best learner on fresh worlds, at every tick size).
 
-**Rules in `kernels/`:** `move.json`, `approach.json` and so on are the current curriculum's, for the 24×24 body. `kernels/grid12/` holds the rules and search outputs from the earlier 12×12 body (commit `1dd377d` and before), including the taste learners. They don't work in the current body.
+**Rules in `kernels/`:** `move.json`, `approach.json` and so on are the current curriculum's, for the 48×48 body. Earlier bodies' rules and search outputs don't work in the current body, and are kept for reference:
+- `kernels/grid12/`: the 12×12 body (commit `1dd377d` and before), including the taste learners;
+- `kernels/grid24_mean/`: the 24×24 body.
 
 ## Watching (`app.py`)
 
@@ -93,18 +95,20 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 
 **Not found:** learning which colour is food, in choose (1–3 meals per life, so one-shot) or in discriminate (tens of tastes per life). With six sensor groups crammed together and cells that see only their neighbours' mean, there seemed to be no room for structure that tells red from blue.
 
-**Now, on the 24×24 sheet** (why and what happened: `LESSONS.md`, "From 12×12 to 24×24"): the curriculum is running again from scratch.
-- **Move** is done.
-- **Approach** is in progress, after two false starts: the activity cost and the sparsity penalty had to be scaled for the bigger sheet.
-- **Circuits:** early rules already build lasting, circuit-like structure (wires and junctions) from the starting noise, similar but not identical from life to life. The small sheet never did that.
+**On the 24×24 sheet** (why we moved: `LESSONS.md`, "Growing the sheet"):
+- **Graze:** 32 meals per 2,000 time units, twice the 12×12 best.
+- **Circuits:** early rules build lasting, circuit-like structure (wires and junctions) from the starting noise, similar but not identical from life to life.
+- **Discriminate:** 10 hours of MAP-Elites found no colour learning.
+
+**Now, on the 48×48 sheet:** more cells rather than smarter cells, the same 180-coefficient cell with room for patterns. The curriculum is running from scratch.
 
 ## Next steps
 
-1. **Finish the curriculum on 24×24** (approach, graze, discriminate), and see whether the extra room allows colour learning.
+1. **Finish the curriculum on 48×48** (approach, graze, discriminate), and see whether the extra room allows colour learning.
 2. **Understand the circuits:** how much they vary across seeds, whether they settle, which variables form them, and whether signals travel along them from sensors to thrusters.
 3. **If colour learning still fails,** the next candidates:
+   - **Gradient inputs:** each variable's east-minus-west and south-minus-north difference as well as its mean (612 coefficients, about 3× the cost; a shared compass).
    - **The fuller cell (parked):** each neighbour's variables as separate inputs, so a cell can tell which neighbour fired.
-   - **An even bigger sheet:** more room still for structure (`LESSONS.md`, "Cells, variables and meta-structures").
 4. **Organism-wide memory:** spread what one side learned to the others.
 5. **Make rules describable:** prune terms one by one while the score holds.
 6. **Side-quest, time:** the medium is continuous (no global clock). Two alternatives are worth trying later:

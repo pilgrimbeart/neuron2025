@@ -41,6 +41,10 @@ TICKS_PER_S = 10            # at speed 1
 DIRECTIONS = ("E", "SE", "SW", "W", "NW", "NE")     # the sensor groups' directions, as on screen (y downwards)
 
 
+def food_name(food) -> str:
+    return {robot.RED: "red is food", robot.BLUE: "blue is food", robot.BOTH: "both colours are food"}[int(food)]
+
+
 def roles(g) -> dict:
     """What each special cell of the sheet is: {cell: (letter, lines describing it)}."""
     out = {}
@@ -123,10 +127,11 @@ class App:
     def restart(self) -> None:
         path = Path(self.kernel) if Path(self.kernel).exists() else evolve.KERNELS / f"{self.kernel}.json"
         world = dataclasses.replace(evolve.load_world(path), dt=self.dt)
-        self.robot = robot.Robot(evolve.load(path), self.task, self.seed, self.food, world=world)
+        food = robot.BOTH if self.task == "graze" else self.food
+        self.robot = robot.Robot(evolve.load(path), self.task, self.seed, food, world=world)
         self.trace = []
         self.roles = roles(self.robot.geometry)
-        self.say(f"kernel {path.stem}, task {self.task}, {'red' if self.food == robot.RED else 'blue'} is food, "
+        self.say(f"kernel {path.stem}, task {self.task}, {food_name(food)}, "
                  f"seed {self.seed}, dt {self.dt}")
 
     # --- drawing ---------------------------------------------------------------------------------------------------
@@ -170,7 +175,7 @@ class App:
         for bx, by, colour in r.blocks:
             rgb = (220, 40, 40) if colour == robot.RED else (40, 80, 255)
             pygame.draw.circle(self.screen, rgb, at((bx, by)), max(3, scale * 0.6))
-            if colour == r.food:
+            if colour == r.food or r.food == robot.BOTH:
                 pygame.draw.circle(self.screen, (255, 255, 255), at((bx, by)), max(3, scale * 0.6) + 3, width=1)
         centre, radius = at(r.pos), world.radius * scale
         pygame.draw.circle(self.screen, (160, 160, 160), centre, radius, width=2)
@@ -181,7 +186,7 @@ class App:
                                (centre[0] + c * radius * 0.75, centre[1] + sn * radius * 0.75), 5 if lit else 2)
         food, poison, firings, spikes = r.counts
         rate = 100 * spikes / max(1, r.geometry.sheet.n * r.ticks * r.world.dt)
-        text = [f"tick {r.ticks}  task {self.task}  {'red' if r.food == robot.RED else 'blue'} is food (ringed)",
+        text = [f"tick {r.ticks}  task {self.task}  {food_name(r.food)} (ringed)",
                 f"ate {food} food, {poison} poison; {firings} thruster firings; {rate:.1f} spikes per cell per 100"]
         for i, line in enumerate(text):
             self.screen.blit(self.font.render(line, True, (255, 255, 255)), (x0 + 10, y0 + 8 + 20 * i))

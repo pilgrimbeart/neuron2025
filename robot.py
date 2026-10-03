@@ -36,9 +36,9 @@ PARTS = 3                               # lives are counted in parts (thirds), t
 
 @dataclass(frozen=True)
 class Body:
-    grid: int = 24              # the disc of cells fits a grid x grid square
-    spacing: float = 3.0        # how far round the rim each input cell is from its thruster's line, in cells
-    depth: float = 3.0          # how far in from the rim each thruster is (its taste cell is 1 in, by the rim)
+    grid: int = 48              # the disc of cells fits a grid x grid square
+    spacing: float = 6.0        # how far round the rim each input cell is from its thruster's line, in cells
+    depth: float = 6.0          # how far in from the rim each thruster is (its taste cell is 1 in, by the rim)
     sensors: int = 6            # each with a red and a blue input cell and an actuator between them
 
 
@@ -138,7 +138,7 @@ def _place(blocks, l, b, pos, w, rng):
             return
 
 
-@njit(cache=True)
+@njit                                   # not cached: it compiles cell.step in, and Numba's cache wouldn't notice cell.py change
 def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
          high, fired, rng, w):
     """One tick of L robots (one sheet each, the same rule) and their worlds: from state the next state is written into
@@ -195,7 +195,7 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
                 _place(blocks, l, b, pos, w, rng)
 
 
-@njit(cache=True)
+@njit                                   # not cached: it calls tick
 def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, rng):
     """Whole lives of L robots, one per world, all with one rule; a, b and x are the working arrays (as cell.step).
     Returns (food, poison, thruster firings, cell spikes) for each part of each life, shape (L, PARTS, 4). Moves pos

@@ -1,17 +1,17 @@
 """A round robot run by a disc of identical cells (cell.py), in a walled arena of red and blue blocks.
 
   - sensors sit evenly round the rim, each a red and a blue input cell either side of an actuator cell (set in from
-    the rim, with the group's taste cell between it and the edge); a sensor sees
-    colour in the direction it faces (by cosine, fading with distance), and its input cell is kicked (v += KICK) at
+    the rim); a sensor sees colour in the direction it faces (by cosine, fading with distance), and its input cell is kicked (v += KICK) at
     random, at RATE x what it sees per unit time (a Poisson process): sparse pulses, never levels
   - time: each tick is DT units of simulated time. Rates are per unit time and kicks, tastes and pushes are
     instantaneous, so behaviour shouldn't depend on DT (1 = the tick the rules were evolved at)
   - each actuator is a thruster: each time its cell's v rises through cell.FIRE_LEVEL, the robot is pushed PUSH away
     from that side. So approaching what one side sees takes the far side's thruster: signals must cross the disc
-  - touching a block eats it, and it is tasted: the taste cell of the sensor group facing it (one cell in from that
-    group's actuator, beside both its input cells) is kicked by TASTE_CONTACT, and the middle four cells of the disc
-    by TASTE_CENTRE, in their own variable t: up (t += taste) for food, down (t -= taste) for poison. The block reappears elsewhere. (The two
-    taste strengths are body genes: evolution can choose where taste lands.)
+  - touching a block eats it, and it is tasted: the red and blue input cells of the sensor group facing it are kicked
+    by TASTE_CONTACT, and the middle four cells of the disc by TASTE_CENTRE, in their own variable t: up (t += taste)
+    for food, down (t -= taste) for poison. Taste arrives where the colour signals enter, since it can't be carried far
+    (LESSONS.md). The block reappears elsewhere. (The two taste strengths are body genes: evolution can choose where
+    taste lands.)
   - tasks, shortest first: move (no blocks), approach (one block, which is food), taste (one red block, which is food
     if red is food and poison otherwise), choose (one red, one blue, one of them food), forage (several of each),
     graze (several of each, all food, seen only near by: SHORT_REACH) and discriminate (as graze, one colour food)
@@ -36,9 +36,9 @@ PARTS = 3                               # lives are counted in parts (thirds), t
 
 @dataclass(frozen=True)
 class Body:
-    grid: int = 48              # the disc of cells fits a grid x grid square
-    spacing: float = 6.0        # how far round the rim each input cell is from its thruster's line, in cells
-    depth: float = 6.0          # how far in from the rim each thruster is (its taste cell is 1 in, by the rim)
+    grid: int = 24              # the disc of cells fits a grid x grid square
+    spacing: float = 3.0        # how far round the rim each input cell is from its thruster's line, in cells
+    depth: float = 3.0          # how far in from the rim each thruster is
     sensors: int = 6            # each with a red and a blue input cell and an actuator between them
 
 
@@ -68,8 +68,8 @@ class World:
 
 
 class Geometry:
-    """The disc of cells, and where the inputs and outputs sit on it. Cells are numbered; inputs, outputs and taste
-    cells are cell numbers, and xy says where each cell is drawn."""
+    """The disc of cells, and where the inputs and outputs sit on it. Cells are numbered; inputs, outputs and the
+    centre cells are cell numbers, and xy says where each cell is drawn."""
 
     def __init__(self, body: Body = Body()):
         n = body.grid
@@ -87,10 +87,9 @@ class Geometry:
         offset = body.spacing / rim
         self.inputs = np.array([[at(a - offset, rim), at(a + offset, rim)] for a in self.angles])    # (s, colour)
         self.outputs = np.array([at(a, rim - body.depth) for a in self.angles])                     # (s,)
-        self.taste = np.array([at(a, rim - 1) for a in self.angles])                                # (s,)
         m = int(c)
         self.centre = np.array([index[p] for p in ((m, m), (m + 1, m), (m, m + 1), (m + 1, m + 1))])
-        special = np.concatenate([self.inputs.ravel(), self.outputs, self.taste, self.centre])
+        special = np.concatenate([self.inputs.ravel(), self.outputs, self.centre])
         assert len(set(special.tolist())) == len(special), "two special cells of the body are the same cell"
 
     def grid(self, values: np.ndarray) -> np.ndarray:
@@ -139,7 +138,7 @@ def _place(blocks, l, b, pos, w, rng):
 
 
 @njit                                   # not cached: it compiles cell.step in, and Numba's cache wouldn't notice cell.py change
-def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food, counts,
+def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, centre, pos, blocks, food, counts,
          high, fired, rng, w):
     """One tick of L robots (one sheet each, the same rule) and their worlds: from state the next state is written into
     new (both (K, (n + 1) * L), as cell.step; x is scratch). Per life l, mutates pos[l], blocks[l], counts[l] (food
@@ -187,8 +186,9 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
                     if along > best:
                         facing, best = s, along
                 sign = 1.0 if good else -1.0
-                c = taste[facing] * lives + l
-                new[TASTE, c] = min(1.0, max(-1.0, new[TASTE, c] + sign * contact))
+                for colour in range(2):                       # taste at the facing group's inputs
+                    c = inputs[facing, colour] * lives + l
+                    new[TASTE, c] = min(1.0, max(-1.0, new[TASTE, c] + sign * contact))
                 for t in range(len(centre)):
                     c = centre[t] * lives + l
                     new[TASTE, c] = min(1.0, max(-1.0, new[TASTE, c] + sign * middle))
@@ -196,7 +196,7 @@ def tick(state, new, x, neighbours, weight, rule, angles, inputs, outputs, taste
 
 
 @njit                                   # not cached: it calls tick
-def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, taste, centre, pos, blocks, food, w, ticks, rng):
+def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, centre, pos, blocks, food, w, ticks, rng):
     """Whole lives of L robots, one per world, all with one rule; a, b and x are the working arrays (as cell.step).
     Returns (food, poison, thruster firings, cell spikes) for each part of each life, shape (L, PARTS, 4). Moves pos
     and blocks."""
@@ -207,7 +207,7 @@ def live(a, b, x, rule, neighbours, weight, angles, inputs, outputs, taste, cent
     fired = np.zeros((lives, len(angles)), dtype=np.bool_)
     for t in range(ticks):
         part = t * PARTS // ticks
-        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, taste, centre, pos, blocks, food,
+        tick(a, b, x, neighbours, weight, rule, angles, inputs, outputs, centre, pos, blocks, food,
              counts[:, part], high, fired, rng, w)
         a, b = b, a
     return counts
@@ -231,7 +231,7 @@ def lifetimes(rule, geometry: Geometry, task: str, worlds, world: World, duratio
     g = geometry
     rng = np.array([s for s, _ in worlds], dtype=np.uint64)
     counts = live(*working(g.sheet.n, len(worlds)), np.asarray(rule, dtype=DTYPE), g.sheet.neighbours, g.sheet.weight,
-                  g.angles, g.inputs, g.outputs, g.taste, g.centre, pos, blocks,
+                  g.angles, g.inputs, g.outputs, g.centre, pos, blocks,
                   np.array([f for _, f in worlds], dtype=float), world.array(), world.ticks(duration), rng)
     return {"counts": counts, "start": start_pos, "end": pos, "first": first, "last": blocks}
 
@@ -282,7 +282,7 @@ class Robot:
     def step(self) -> None:
         g = self.geometry
         tick(self.state, self.new, self.x, g.sheet.neighbours, g.sheet.weight, self.rule, g.angles, g.inputs,
-             g.outputs, g.taste, g.centre, self._pos, self._blocks, self._food, self._counts, self.high, self.fired,
+             g.outputs, g.centre, self._pos, self._blocks, self._food, self._counts, self.high, self.fired,
              self.rng, self.world.array())
         self.state, self.new = self.new, self.state
         self.ticks += 1

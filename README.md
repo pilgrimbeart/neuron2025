@@ -21,14 +21,13 @@ A cell knows only its own variables and its neighbours'. The sheet is a list of 
 
 ## The robot (`robot.py`)
 
-- **The brain** is a disc of 1,804 cells on a 48×48 grid.
+- **The brain** is a disc of 448 cells on a 24×24 grid.
 - **Six sensor groups** sit round the rim, spaced out so that structure can form around them. Each group has:
-  - a red and a blue input cell, on the rim, 6 cells either side;
-  - a taste cell, by the rim between them;
-  - a thruster, 6 cells in from the rim.
+  - a red and a blue input cell, on the rim, 3 cells either side;
+  - a thruster, 3 cells in from the rim.
 - **Sensing:** a sensor sees colour in the direction it faces, fading with distance. Its input cell is kicked at random at a rate that rises with what it sees (a Poisson process): sparse pulses, never levels.
 - **Moving:** each thruster pushes the robot away from its own side as its v rises through 0.5. So approaching what one side sees needs the far side's thruster, and signals must cross the disc.
-- **Eating:** touching a block eats it. Taste kicks t in the taste cell of the sensor group facing the block, and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
+- **Eating:** touching a block eats it. Taste kicks t in the red and blue input cells of the sensor group facing the block (where the colour signals enter, since taste can't be carried far), and in the middle of the disc: up for food, down for poison. The strengths of the two are body genes that evolution can set.
 - **Lives** start from near-blank noise (±0.1 in every variable). Each life has its own random stream, so a world's food and poison lives are identical until the first taste. Counts are kept per third of the life.
 
 Tasks, shortest first:
@@ -66,9 +65,10 @@ python mapelites.py 10 --task discriminate --seed kernels/graze.json     # hours
   - **Seeding:** `--seed` adds saved rules (kernels, with small variations, or a whole archive `.pkl`).
   - **Outputs:** `kernels/map_TASK.pkl` (the archive), `map_TASK.json` (the best score), `map_TASK_learner.json` (the best learner on its own worlds) and `map_TASK_validated.json` (the best learner on fresh worlds, at every tick size).
 
-**Rules in `kernels/`:** `move.json`, `approach.json` and so on are the current curriculum's, for the 48×48 body. Earlier bodies' rules and search outputs don't work in the current body, and are kept for reference:
+**Rules in `kernels/`:** the current search's outputs, for the current 24×24 body. Rules from earlier bodies are kept for reference:
 - `kernels/grid12/`: the 12×12 body (commit `1dd377d` and before), including the taste learners;
-- `kernels/grid24_mean/`: the 24×24 body.
+- `kernels/grid24_mean/`: the 24×24 body with a separate taste cell (its move, approach and graze rules still work, since they don't depend on taste);
+- `kernels/grid48/`: the 48×48 body.
 
 ## Watching (`app.py`)
 
@@ -78,14 +78,14 @@ python app.py approach -c "task approach" -c "speed 1" -c "pause"     # then typ
 
 The screen is in four quarters:
 - **Top-left, the cells:**
-  - v green when positive and red when negative; m, w or t in blue (`view`);
-  - special cells are lettered: R and B (red and blue inputs), M (thrusters), t (taste cells), c (centre taste cells);
+  - `view all` (the default): v green when positive and red when negative, m in blue; `view v`, `view w`, `view m` or `view t`: that variable alone, in grey (−1 black, 0 grey, +1 white);
+  - special cells are lettered: R and B (red and blue inputs, which also receive taste), M (thrusters), c (centre taste cells);
   - hovering over a cell describes it in the top-right corner, with its current variables.
 - **Top-right, the world:** food is ringed in white. The panel shows meals, thruster firings, and spikes per cell per 100 units of time.
 - **Bottom-left:** each thruster's v over time.
 - **Bottom-right:** the console. Commands can also be written to `control_in.txt`, and output goes to `control_out.log`.
 
-Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `view m|w|t`, `rule`, `quit`.
+Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `step N`, `view all|v|w|m|t`, `rule`, `quit`. Clicking a panel gives it the keyboard: with the cells panel focused (white outline), the space bar does `step 1`; click the console to type.
 
 ## Where things stand
 
@@ -95,16 +95,15 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 
 **Not found:** learning which colour is food, in choose (1–3 meals per life, so one-shot) or in discriminate (tens of tastes per life). With six sensor groups crammed together and cells that see only their neighbours' mean, there seemed to be no room for structure that tells red from blue.
 
-**On the 24×24 sheet** (why we moved: `LESSONS.md`, "Growing the sheet"):
-- **Graze:** 32 meals per 2,000 time units, twice the 12×12 best.
-- **Circuits:** early rules build lasting, circuit-like structure (wires and junctions) from the starting noise, similar but not identical from life to life.
-- **Discriminate:** 10 hours of MAP-Elites found no colour learning.
+**Growing the sheet** (`LESSONS.md`, "Growing the sheet"):
+- **24×24:** graze reached 32 meals per 2,000 time units, twice the 12×12 best, and early rules build lasting, circuit-like structure from noise. But 10 hours of discriminate found no colour learning.
+- **48×48:** worse (approach 1.24, graze 16 meals) and no sparser, so we went back to 24×24.
 
-**Now, on the 48×48 sheet:** more cells rather than smarter cells, the same 180-coefficient cell with room for patterns. The curriculum is running from scratch.
+**Now:** discriminate on 24×24, with one change: taste arrives at the input cells, where the colour signals enter. The hand-designed seed experiments showed colour-specific learning needs that (`LESSONS.md`, "Designing a seed rule by hand"). The search is seeded with the 24×24 graze rule and the previous discriminate archive.
 
 ## Next steps
 
-1. **Finish the curriculum on 48×48** (approach, graze, discriminate), and see whether the extra room allows colour learning.
+1. **Discriminate with taste at the inputs:** see whether colour learning appears now.
 2. **Understand the circuits:** how much they vary across seeds, whether they settle, which variables form them, and whether signals travel along them from sensors to thrusters.
 3. **If colour learning still fails,** the next candidates:
    - **Gradient inputs:** each variable's east-minus-west and south-minus-north difference as well as its mean (612 coefficients, about 3× the cost; a shared compass).

@@ -2,7 +2,8 @@
 
     python app.py [KERNEL] [-c COMMAND]...
 
-Four quarters: the cells (top left: v green when positive, red when negative; m, or w, blue; special cells lettered,
+Four quarters: the cells (top left: v green when positive, red when negative, m blue; or one variable in grey with
+`view`; special cells lettered,
 and the cell under the mouse described top right), the world (top right), each
 actuator's v over time (bottom left, the firing level dotted), and a console (bottom right). Commands are typed at the
 console or written to control_in.txt; output also goes to control_out.log.
@@ -32,7 +33,8 @@ HELP = """commands:
   restart             a new life with the same settings
   speed N             ticks per frame (1..50)
   pause / resume
-  view m|w|t          which variable shows in blue on the cells
+  step N              pause, then advance exactly N ticks (with the cells panel focused, the space bar does step 1)
+  view all|v|w|m|t    the cells: all (v green/red, m blue) or one variable in grey (-1 black, 0 grey, +1 white)
   rule                print the rule
   quit"""
 TICKS_PER_S = 10            # at speed 1
@@ -50,10 +52,9 @@ def roles(g) -> dict:
     out = {}
     for s in range(len(g.angles)):
         side = f"sensor group {s}, facing {DIRECTIONS[s]}" if len(g.angles) == 6 else f"sensor group {s}"
-        out[g.inputs[s, 0]] = ("R", ["red input", side, "kicked as it sees red"])
-        out[g.inputs[s, 1]] = ("B", ["blue input", side, "kicked as it sees blue"])
+        out[g.inputs[s, 0]] = ("R", ["red input", side, "v kicked as it sees red", "t kicked by a bite on this side"])
+        out[g.inputs[s, 1]] = ("B", ["blue input", side, "v kicked as it sees blue", "t kicked by a bite on this side"])
         out[g.outputs[s]] = ("M", ["thruster", side, "firing pushes the robot away"])
-        out[g.taste[s]] = ("t", ["taste cell", side, "t kicked by a bite on this side"])
     for i in g.centre:
         out[i] = ("c", ["centre taste cell", "t kicked by every bite"])
     return out
@@ -69,7 +70,8 @@ class App:
         self.input = ""
         self.kernel, self.task, self.food, self.seed, self.dt = kernel, "choose", robot.RED, 0, 1.0
         self.speed, self.paused, self.running = 1, False, True
-        self.blue = "m"
+        self.focus = "console"              # which panel the keyboard goes to: "console" or "cells"
+        self.view = "all"                   # the cells panel: "all", or one variable in grey
         self.log = open(CONTROL_OUT, "a", buffering=1)
         CONTROL_IN.write_text("")
         self.restart()
@@ -110,11 +112,15 @@ class App:
                 self.restart()
             elif name == "speed":
                 self.speed = max(1, min(50, int(args[0])))
+            elif name == "step":
+                self.paused = True
+                for _ in range(int(args[0]) if args else 1):
+                    self.advance()
             elif name in ("pause", "resume"):
                 self.paused = name == "pause"
             elif name == "view":
-                assert args[0] in cell.VARIABLES
-                self.blue = args[0]
+                assert args[0] == "all" or args[0] in cell.VARIABLES
+                self.view = args[0]
             elif name == "rule":
                 self.say(cell.describe(self.robot.rule))
             elif name == "quit":
@@ -138,12 +144,16 @@ class App:
 
     def draw_cells(self, x0, y0, side) -> None:
         r, g = self.robot, self.robot.geometry
-        v, blue = g.grid(r.state[0]), g.grid(r.state[cell.VARIABLES.index(self.blue)])
         alive = g.grid(np.ones(g.sheet.n)) > 0
-        rgb = np.zeros(v.shape + (3,))
-        rgb[..., 0] = np.clip(-v, 0, 1)
-        rgb[..., 1] = np.clip(v, 0, 1)
-        rgb[..., 2] = (blue + 1) / 2 * 0.8
+        if self.view == "all":                              # v green when positive, red when negative; m blue
+            v, m = g.grid(r.state[0]), g.grid(r.state[cell.VARIABLES.index("m")])
+            rgb = np.zeros(v.shape + (3,))
+            rgb[..., 0] = np.clip(-v, 0, 1)
+            rgb[..., 1] = np.clip(v, 0, 1)
+            rgb[..., 2] = (m + 1) / 2 * 0.8
+        else:                                               # one variable in grey: -1 black, 0 grey, +1 white
+            x = g.grid(r.state[cell.VARIABLES.index(self.view)])
+            rgb = np.repeat(((x + 1) / 2)[..., None], 3, axis=2)
         rgb[~alive] = 0
         surface = pygame.surfarray.make_surface((rgb * 255).astype(np.uint8))
         self.screen.blit(pygame.transform.scale(surface, (side, side)), (x0, y0))
@@ -213,6 +223,16 @@ class App:
 
     # --- running ---------------------------------------------------------------------------------------------------
 
+    def advance(self) -> None:
+        """One tick of the robot, recorded for the chart."""
+        self.robot.step()
+        self.trace.append(self.robot.state[0, self.robot.geometry.outputs].copy())
+        self.trace = self.trace[-400:]
+
+    def cells_rect(self) -> pygame.Rect:
+        side = min(self.width // 2, self.height // 2)
+        return pygame.Rect(0, 0, side, side)
+
     def run(self, commands) -> None:
         for c in commands:
             self.command(c)
@@ -221,6 +241,13 @@ class App:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                elif event.type == pygame.MOUSEBUTTONDOWN:    # clicking a panel gives it the keyboard
+                    self.focus = "cells" if self.cells_rect().collidepoint(event.pos) else "console"
+                elif event.type == pygame.KEYDOWN and self.focus == "cells":
+                    if event.key == pygame.K_SPACE:
+                        self.command("step 1")
+                    elif event.key == pygame.K_ESCAPE:
+                        self.running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RETURN:
                         self.command(self.input)
@@ -238,16 +265,16 @@ class App:
                     self.command(line.strip())
             if not self.paused:
                 for _ in range(self.speed):
-                    self.robot.step()
-                    g = self.robot.geometry
-                    self.trace.append(self.robot.state[0, g.outputs].copy())
-                self.trace = self.trace[-400:]
+                    self.advance()
             half_w, half_h = self.width // 2, self.height // 2
             self.screen.fill((0, 0, 0))
             self.draw_cells(0, 0, min(half_w, half_h))
             self.draw_world(half_w, 0, self.width - half_w, half_h)
             self.draw_chart(0, half_h, half_w, self.height - half_h)
             self.draw_console(half_w, half_h, self.width - half_w, self.height - half_h)
+            focused = self.cells_rect() if self.focus == "cells" else pygame.Rect(
+                half_w, half_h, self.width - half_w, self.height - half_h)
+            pygame.draw.rect(self.screen, (255, 255, 255), focused, width=1)
             pygame.display.flip()
             clock.tick(TICKS_PER_S)
         self.log.close()

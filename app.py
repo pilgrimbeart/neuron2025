@@ -34,7 +34,7 @@ HELP = """commands:
   speed N             ticks per frame (1..50)
   pause / resume
   step N              pause, then advance exactly N ticks (with the cells panel focused, the space bar does step 1)
-  view all|v|w|m|t    the cells: all (v green/red, m blue) or one variable in grey (-1 black, 0 grey, +1 white)
+  view all|v|w|m|t|e|z  the cells: all (v green/red, m blue) or one variable in grey (-1 black, 0 grey, +1 white)
   rule                print the rule
   quit"""
 TICKS_PER_S = 10            # at speed 1

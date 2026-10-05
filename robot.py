@@ -53,6 +53,7 @@ class World:
     taste_contact: float = 1.0  # how much a taste adds to (or takes from) v where the block touched
     taste_centre: float = 0.0   # ... and in the middle of the disc
     dt: float = 1.0             # simulated time per tick
+    blocks: int = 4             # blocks of each colour in forage, graze and discriminate (more: a target-rich world)
 
     def array(self) -> np.ndarray:
         return np.array([self.size, self.radius, self.reach, self.rate, self.push, self.kick, self.taste_contact,
@@ -246,7 +247,7 @@ def setup(task: str, seed_: int, food: int, world: World = World()):
         angle, distance = rng.uniform(0, 2 * math.pi), rng.uniform(6, 12)
         colour = food if task == "approach" else RED
         return pos, np.array([[pos[0] + distance * math.cos(angle), pos[1] + distance * math.sin(angle), colour]])
-    per_colour = 1 if task == "choose" else 4               # forage, graze, discriminate: 4 of each
+    per_colour = 1 if task == "choose" else world.blocks
     blocks = []
     while len(blocks) < 2 * per_colour:
         xy = rng.uniform(world.radius, world.size - world.radius, 2)

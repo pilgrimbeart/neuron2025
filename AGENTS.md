@@ -20,5 +20,6 @@ Commit and push only when the user says "Push".
 - Check evolved results on fresh worlds and at other tick sizes, not just the worlds they were evolved in, before reporting them; fixed evaluation worlds and a fixed tick let flukes and artefacts in.
 - When the body or the sheet size changes, evolved rules no longer apply: keep them aside (as `kernels/grid12/`) and evolve again from the start of the curriculum. Penalties that depend on the number of cells or the size of a rule may need scaling.
 - Measure, and trace failures to a cause before fixing them. Record findings and dead ends in `LESSONS.md`.
+- Keep experimental setups that are still in use side by side in the code (sharing `cell.py`), rather than ripping one up for the next. When a setup is finished, tag it in git (`exp/NAME`), list it under "Experiments" in the README and name the tag in `LESSONS.md`, so it can be brought back exactly.
 - Before reporting a behaviour as working, also show it live: drive the running app (`python app.py`) through the control channel (`control_in.txt` / `control_out.log`) so the user can watch.
 - The hand-designed system (excitable medium, gates, `verify.py`) is in `old_manual_gates/` and still runs from there (`cd old_manual_gates && python neuron.py`); its old rules (shared `DEFAULT_PARAMS`, `verify.py` before committing) apply only to changes there.

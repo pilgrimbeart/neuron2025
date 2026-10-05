@@ -1,7 +1,8 @@
 """MAP-Elites: a wide search for a cell rule that learns, keeping the best rule for each kind of behaviour rather
 than only the best rule.
 
-    python mapelites.py [HOURS] [--task taste|choose] [--resume] [--seed KERNEL...]
+    python mapelites.py [HOURS] [--task taste|choose|discriminate] [--resume] [--seed KERNEL...] [--variables v,w,m,t]
+                        [--freeze v,w]
 
 A genome is a rule (cell.py) and two body genes: how strongly a taste kicks the cell where the block touched and
 the middle of the disc (robot.World.taste_contact, taste_centre; 0..TASTE_MAX). Each genome lives in WORLDS (or TASK_WORLDS[task]) fixed
@@ -17,15 +18,20 @@ A learner sits where poison falls and food doesn't; eating everything, in the mi
 sheet's spikes per cell per 100 units of time (activity above evolve.SPARSE_RATE costs score). Within a cell the higher score
 wins, scored as in evolve.py, except that learning (the rise in food share from the first third of lives to the
 last) only counts when both have more than MIN_MEALS meals per life, so that stopping eating can't pass for
-learning. Offspring: a random elite, mutated at a random scale, or crossed with another along the line between them.
+learning. Offspring: a random elite, mutated at a random scale (up to REACH), or crossed with another along the line
+between them.
 Racing: each candidate is lived at the tick sizes one at a time, coarsest (cheapest) first. Its score can only fall
 as tick sizes are added (the score is the worst over them), so after each, only candidates that already beat their
 niche's elite, or land in an empty niche, go on. That rejects nothing that could have won (bar a candidate whose
 niche moves as tick sizes are added), and typically only a few percent go past the first.
 
---seed adds saved rules to the first batches: a kernel (.json, with its body genes) with SEED_VARIANTS small
-variations, or every elite of another search's archive (.pkl). A way to bring in rules from another search, such as
-one on an easier task.
+--variables and --freeze limit which rule coefficients may change (evolve.free_mask), the fixed part taken from the
+first --seed kernel: a stage can add variables for a new challenge while what already works stays.
+
+Without --seed, the first INITIAL candidates are random rules. With it, they are the saved rules (a kernel, .json, with
+its body genes, or every elite of another search's archive, .pkl) and variations of them, and mutation stays small
+(SEEDED_REACH): a working robot survives small changes to many terms but not large ones (with 622 free terms, the
+24x24 forager stops eating at a spread of about 0.1).
 
 The archive is saved to kernels/map_TASK.pkl, the best-scoring elite to kernels/map_TASK.json and the best learner to
 kernels/map_TASK_learner.json. Fixed worlds let flukes in, so every VALIDATE_EVERY batches the best learner is lived
@@ -59,8 +65,9 @@ CHANGE = 0.6                # the food and poison axes span -CHANGE..CHANGE
 TASTE_MAX = 1.5
 BATCH = 64
 INITIAL = 256
-SEED_VARIANTS = 7
-SEED_SPREAD = 0.02
+REACH = 0.5                 # the largest mutation scale
+SEEDED_REACH = 0.1          # the same, near saved rules
+SMALLEST = 0.005            # the smallest
 N_GENES = cell.N_PARAMS + 2
 
 
@@ -117,21 +124,17 @@ def random_genome(rng) -> np.ndarray:
     return np.r_[rng.normal(0, scale, cell.N_PARAMS), rng.uniform(0, TASTE_MAX, 2)]
 
 
-def seeded_genomes() -> list[np.ndarray]:
-    """Our evolved move and approach rules, with a few ways of tasting."""
-    genomes = []
-    for name in ("move", "approach"):
-        path = evolve.KERNELS / f"{name}.json"
-        if path.exists():
-            for body in ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)):
-                genomes.append(np.r_[evolve.load(path), body])
-    return genomes
+def variant(seeds, rng, reach: float) -> np.ndarray:
+    """A saved rule, varied at a random scale up to reach."""
+    genome = seeds[rng.integers(len(seeds))].copy()
+    genome[:cell.N_PARAMS] += rng.normal(0, np.exp(rng.uniform(np.log(SMALLEST), np.log(reach))), cell.N_PARAMS)
+    return genome
 
 
-def offspring(archive, rng) -> np.ndarray:
+def offspring(archive, rng, reach: float) -> np.ndarray:
     elites = list(archive.values())
     a = elites[rng.integers(len(elites))]["genome"]
-    sigma = np.exp(rng.uniform(np.log(0.005), np.log(0.5)))
+    sigma = np.exp(rng.uniform(np.log(SMALLEST), np.log(reach)))
     child = a + rng.normal(0, sigma, N_GENES)
     if rng.random() < 0.5:                      # along the line towards another elite
         b = elites[rng.integers(len(elites))]["genome"]
@@ -150,9 +153,8 @@ def save_rule(path: Path, task: str, elite: dict) -> None:
         "body": {"taste_contact": float(genome[-2]), "taste_centre": float(genome[-1])}}, indent=1))
 
 
-def from_kernels(paths, rng) -> list[np.ndarray]:
-    """Saved rules as genomes: each kernel with SEED_VARIANTS small variations of its rule, and every elite of an
-    archive."""
+def from_kernels(paths) -> list[np.ndarray]:
+    """Saved rules as genomes: each kernel, and every elite of an archive."""
     genomes = []
     for path in paths:
         if str(path).endswith(".pkl"):
@@ -162,14 +164,12 @@ def from_kernels(paths, rng) -> list[np.ndarray]:
         body = evolve.load_world(path)
         genome = np.r_[evolve.load(path), body.taste_contact, body.taste_centre]
         genomes.append(genome)
-        for _ in range(SEED_VARIANTS):
-            variant = genome.copy()
-            variant[:cell.N_PARAMS] += rng.normal(0, SEED_SPREAD, cell.N_PARAMS)
-            genomes.append(variant)
     return genomes
 
 
-def run(hours: float, task: str, resume: bool, seeds=()) -> None:
+def run(hours: float, task: str, resume: bool, seeds=(), free=None) -> None:
+    """free (evolve.free_mask) says which rule coefficients the search may change; the rest stay as in the first
+    seed kernel (the body genes are always free)."""
     worlds = TASK_WORLDS.get(task, WORLDS)
     evolve.KERNELS.mkdir(exist_ok=True)
     store = evolve.KERNELS / f"map_{task}.pkl"
@@ -182,14 +182,19 @@ def run(hours: float, task: str, resume: bool, seeds=()) -> None:
     batches = 0
     validated = -1.0
     raced = passed = 0
-    extra = from_kernels(seeds, rng)
+    saved = from_kernels(seeds)
+    extra = list(saved)                                 # the saved rules themselves go first
+    reach = SEEDED_REACH if saved else REACH
+    free = np.r_[np.ones(cell.N_PARAMS, dtype=bool) if free is None else free, True, True]
+    base = saved[0] if saved else np.zeros(N_GENES)
+    held = lambda g: np.where(free, g, base)            # every genome keeps the fixed part
     with Pool() as pool:
         while time.time() < deadline:
             if evaluations < INITIAL:
-                genomes = seeded_genomes() if evaluations == 0 else []
-                genomes += [random_genome(rng) for _ in range(BATCH - len(genomes))]
+                genomes = [variant(saved, rng, reach) if saved else random_genome(rng) for _ in range(BATCH)]
             else:
-                genomes = [offspring(archive, rng) for _ in range(BATCH)]
+                genomes = [offspring(archive, rng, reach) for _ in range(BATCH)]
+            genomes = [held(g) for g in genomes]
             if extra:
                 genomes, extra = extra[:BATCH] + genomes[len(extra[:BATCH]):], extra[BATCH:]
             first = pool.map(live_at, [(g_, task, worlds, evolve.DTS[0]) for g_ in genomes])
@@ -239,5 +244,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", choices=("taste", "choose", "discriminate"), default="taste")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", nargs="+", default=[], help="saved rules to add to the first batch")
+    parser.add_argument("--variables", default=",".join(cell.VARIABLES), help="the variables in use, e.g. v,w")
+    parser.add_argument("--freeze", default="", help="variables whose rule (among themselves) stays as the first seed's")
     args = parser.parse_args()
-    run(args.hours, args.task, args.resume, args.seed)
+    run(args.hours, args.task, args.resume, args.seed,
+        evolve.free_mask(args.variables.split(","), [x for x in args.freeze.split(",") if x]))

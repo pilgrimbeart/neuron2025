@@ -9,15 +9,18 @@ The cell rule is **evolved**. It was first designed by hand: an excitable medium
 
 ## The cell (`cell.py`)
 
-Each cell holds four numbers, each kept within −1..1:
+Each cell holds six numbers, each kept within −1..1:
 - **v:** fast. Sensor pulses kick it, and an actuator fires when its v rises through 0.5.
 - **w:** fast, free for evolution to use, e.g. as recovery.
 - **m:** ten times slower, free to use as memory.
 - **t:** fast. Only tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike.
+- **e** (fast) and **z** (ten times slower): free for learning to use, e.g. as an eligibility trace and a gate on where learning happens.
 
-Every tick, each variable moves by its rate (0.1, 0.1, 0.01, 0.1) × dt times a quadratic polynomial of the cell's own variables and the mean of each over its neighbours (up to 8). dt is the simulated time per tick (`World.dt`, 1 by default). A rule is those polynomials' coefficients (180 of them). The aim is for most to end up zero, so that the rule can be said in a sentence or two (`cell.describe`).
+Every tick, each variable moves by its rate (0.1, 0.1, 0.01, 0.1, 0.1, 0.01) × dt times a polynomial of the cell's own variables and the mean of each over its neighbours (up to 8): 1, those 12 inputs, their pairwise products and squares, and the cubic products of the cell's own variables (so a three-factor learning rule such as e·t·z is one term). dt is the simulated time per tick (`World.dt`, 1 by default). A rule is those polynomials' coefficients (147 terms per variable, 882 in all). Rules saved with fewer variables or without the cubic terms load with the missing coefficients at zero, and behave as before.
 
-A cell knows only its own variables and its neighbours'. The sheet is a list of cells with neighbour lists, and the body decides who neighbours whom. For speed, a genome's lives are stepped together, and the rule is written out from `TERMS` as one expression per variable so that it vectorises; the physics is the same.
+Search can be limited to some variables (complexification): `--variables v,w` evolves only v's and w's equations in terms of each other (the rest stay zero), and `--freeze v,w,m,t` keeps the seed's rule among those variables as it was, so only terms involving the new ones are searched (in `evolve.py` and `mapelites.py`). The aim is for most to end up zero, so that the rule can be said in a sentence or two (`cell.describe`).
+
+A cell knows only its own variables and its neighbours'. The sheet is a list of cells with neighbour lists, and the body decides who neighbours whom. For speed, a genome's lives are stepped together, and the rule is written out from `TERMS` term by term so that it vectorises; the physics is the same.
 
 ## The robot (`robot.py`)
 
@@ -68,7 +71,10 @@ python mapelites.py 10 --task discriminate --seed kernels/graze.json     # hours
 **Rules in `kernels/`:** the current search's outputs, for the current 24×24 body. Rules from earlier bodies are kept for reference:
 - `kernels/grid12/`: the 12×12 body (commit `1dd377d` and before), including the taste learners;
 - `kernels/grid24_mean/`: the 24×24 body with a separate taste cell (its move, approach and graze rules still work, since they don't depend on taste);
-- `kernels/grid48/`: the 48×48 body.
+- `kernels/grid48/`: the 48×48 body;
+- `kernels/vw_only/`: move, approach and graze with only v and w in use (`--variables v,w`): they move but hardly forage.
+
+The current discriminate search is seeded with `kernels/grid24_mean/graze.json`, with `--freeze v,w,m,t` so that only learning's variables (e, z) are searched.
 
 ## Watching (`app.py`)
 

@@ -2,13 +2,16 @@
 
 Each cell holds a few numbers, VARIABLES, each kept within -1..1: v (fast; sensor pulses kick it, and an actuator
 fires when it rises through FIRE_LEVEL), w (fast, free for evolution to use, e.g. as recovery), m (slow, free to use
-as memory) and t (fast; tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike).
-Every tick, every cell looks at its own variables and the mean of each over its neighbours (nv, nw, nm, nt), and each
+as memory), t (fast; tastes kick it, up for food and down for poison, like a neuromodulator rather than a spike), and
+e (fast) and z (slow), free for learning to use, e.g. as an eligibility trace and a gate on where learning happens.
+Every tick, every cell looks at its own variables and the mean of each over its neighbours (nv, nw, ...), and each
 variable x changes by
 
     x += RATE[x] x dt x (sum of TERMS weighted by the rule's coefficients for x)
 
-where TERMS are 1, the inputs, and their pairwise products and squares. A rule is those coefficients; most should be
+where TERMS are 1, the inputs, their pairwise products and squares, and the cubic products of a cell's own variables
+(such as e*t*z: a three-factor learning rule is one term). The quadratic terms come first, so a rule from before the
+cubic terms is the start of one with them. A rule is those coefficients; most should be
 zero, so that the rule can be said in a sentence or two (`describe`). Small rates make the rule an equation of
 motion (like FitzHugh-Nagumo's): a cell can't flip every tick, so firing has to be a real excursion and recovery;
 m's rate is ten times slower still. dt is the simulated time per tick (1 = the tick the rules were evolved at); a
@@ -26,24 +29,36 @@ from __future__ import annotations
 import numpy as np
 from numba import njit
 
-VARIABLES = ("v", "w", "m", "t")
-RATES = np.array([0.1, 0.1, 0.01, 0.1], dtype=np.float32)
+VARIABLES = ("v", "w", "m", "t", "e", "z")
+RATES = np.array([0.1, 0.1, 0.01, 0.1, 0.1, 0.01], dtype=np.float32)
 DTYPE = np.float32               # a cell's numbers
 K = len(VARIABLES)
 N_INPUTS = 2 * K
-N_TERMS = 1 + N_INPUTS + N_INPUTS * (N_INPUTS + 1) // 2
-N_PARAMS = K * N_TERMS           # the coefficients for each variable in turn
 FIRE_LEVEL = 0.5
 MAX_NEIGHBOURS = 8
 
 
+def factors(k: int) -> list[tuple[int, ...]]:
+    """Each term as the inputs it multiplies (inputs 0..k-1 are a cell's own variables, k..2k-1 its neighbours'
+    means): 1, each input, each pair, then each triple of own variables."""
+    n = 2 * k
+    return ([()] + [(p,) for p in range(n)] + [(p, q) for p in range(n) for q in range(p, n)]
+            + [(p, q, r) for p in range(k) for q in range(p, k) for r in range(q, k)])
+
+
 def terms(variables: tuple[str, ...]) -> tuple[str, ...]:
+    """The terms' names: "1", "v", "nv*w", "v^2", "e*t*z", "v^2*w", ..."""
     inputs = variables + tuple("n" + x for x in variables)
-    return ("1",) + inputs + tuple(f"{a}*{b}" if a != b else f"{a}^2"
-                                   for i, a in enumerate(inputs) for b in inputs[i:])
+    named = []
+    for f in factors(len(variables)):
+        powers = [inputs[p] + (f"^{f.count(p)}" if f.count(p) > 1 else "") for p in sorted(set(f))]
+        named.append("*".join(powers) or "1")
+    return tuple(named)
 
 
 TERMS = terms(VARIABLES)
+N_TERMS = len(TERMS)
+N_PARAMS = K * N_TERMS           # the coefficients for each variable in turn
 
 
 class Sheet:
@@ -61,24 +76,15 @@ class Sheet:
 
 
 def _source() -> str:
-    """The source of `_change`: the rule written out as one expression per variable, term by term, inside a loop
-    over lives, so that the compiler keeps a life's inputs and the coefficients in registers and works on 8 lives at
-    once. It is the same sum as the TERMS description above, only spelled out."""
-    inputs = [f"i{p}" for p in range(N_INPUTS)]
+    """The source of `_change`: the rule written out term by term, one loop over lives per variable (small enough
+    for the compiler to turn into vector instructions, 8 lives at once). It is the same sum as the TERMS description
+    above, only spelled out."""
     lines = ["def _change(x, rule, change, lives):"]
-    lines += [f"    c{t} = rule[{t}]" for t in range(N_PARAMS)]
-    lines += ["    for l in range(lives):"]
-    lines += [f"        {name} = x[{p}, l]" for p, name in enumerate(inputs)]
     for a in range(K):
-        sum_ = [f"c{a * N_TERMS}"] + [f"c{a * N_TERMS + 1 + p} * {name}" for p, name in enumerate(inputs)]
-        t = 1 + N_INPUTS
-        for p in range(N_INPUTS):
-            for q in range(p, N_INPUTS):
-                sum_.append(f"c{a * N_TERMS + t} * {inputs[p]} * {inputs[q]}")
-                t += 1
-        lines.append(f"        d{a} = " + " + ".join(sum_))
-    lines += [f"        change[{a}, l] = d{a}" for a in range(K)]
-    return "\n".join(lines)
+        lines += [f"    c{t} = rule[{a * N_TERMS + t}]" for t in range(N_TERMS)]
+        sum_ = [f"c{t}" + "".join(f" * x[{p}, l]" for p in f) for t, f in enumerate(factors(K))]
+        lines += ["    for l in range(lives):", f"        change[{a}, l] = " + " + ".join(sum_)]
+    return "\n".join(lines) + "\n"
 
 
 _namespace = {}
@@ -129,12 +135,14 @@ def describe(rule, threshold: float = 1e-3) -> str:
 
 
 def widen(rule: np.ndarray, variables: tuple[str, ...]) -> np.ndarray:
-    """A rule written for fewer variables, as a rule for these: the same coefficients, the new terms zero."""
+    """A rule written for fewer variables or terms, as a rule for these: the same coefficients, the new terms zero.
+    A rule's terms are a start of terms(variables) (one from before the cubic terms has only the quadratic ones)."""
     if len(rule) == N_PARAMS:
         return np.asarray(rule, dtype=float)
-    old_terms = terms(variables)
+    per = len(rule) // len(variables)
+    old_terms = terms(variables)[:per]
     new = np.zeros(N_PARAMS)
     for a, name in enumerate(variables):
         for c, term in enumerate(old_terms):
-            new[VARIABLES.index(name) * N_TERMS + TERMS.index(term)] = rule[a * len(old_terms) + c]
+            new[VARIABLES.index(name) * N_TERMS + TERMS.index(term)] = rule[a * per + c]
     return new

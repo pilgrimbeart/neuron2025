@@ -1,12 +1,14 @@
 """Evolve the cell rule (cell.py) for a robot task (robot.py), by CMA-ES.
 
-    python evolve.py TASK [GENERATIONS] [--from KERNEL] [--sparsity S] [--sigma SIGMA] [--sigma-m SIGMA_M]
+    python evolve.py TASK [GENERATIONS] [--from KERNEL] [--sparsity S] [--sigma SIGMA] [--variables v,w] [--freeze v,w]
 
 Each generation, every candidate rule lives LIVES lives in fresh random worlds, at each tick size in DTS; the fitness
 is the worse of its task scores over the tick sizes (so no rule can rely on the tick size), minus S x the sum of the
 rule's absolute coefficients (so rules stay short enough to say). The rule of the search's mean is scored the same
 way on fixed validation worlds each generation, also at the finer tick sizes in CHECK_DTS, and whenever it beats the
-best so far it is saved to kernels/TASK.json.
+best so far it is saved to kernels/TASK.json. --variables limits the rule to some variables (the others' coefficients stay
+zero), and --freeze keeps the given variables' rule among themselves as --from's, so that a stage can add a variable
+for a new challenge while what already works stays (`free_mask`).
 
 Fitness per task (averaged over lives), less the cost of activity (`cost`): FIRE_COST per thruster firing, and
 ACTIVITY x how far the sheet's spike rate (spikes per cell per unit time) is above SPARSE_RATE. Sparse activity is
@@ -155,26 +157,41 @@ def _job(args):
     return score(rule, task, seeds) - sparsity * float(np.abs(rule).sum())
 
 
-def involves_m() -> np.ndarray:
-    """Which coefficients have to do with m: m's own, and every term with m or nm in it."""
+def term_variables(term: str) -> set[str]:
+    """The variables a term involves: "nv*w^2" -> {"v", "w"}; "1" -> {}."""
+    names = {factor.split("^")[0] for factor in term.split("*") if factor != "1"}
+    return {name[1:] if name.startswith("n") and name[1:] in cell.VARIABLES else name for name in names}
+
+
+def free_mask(active=cell.VARIABLES, frozen=()) -> np.ndarray:
+    """Which coefficients a search may change: those of an active variable's equation whose term involves only active
+    variables, except the frozen part (a frozen variable's equation, in terms that involve only frozen variables).
+    The rest stay as they are: zero for variables not yet in use, the earlier stage's values for frozen ones."""
     mask = np.zeros(cell.N_PARAMS, dtype=bool)
     for a, name in enumerate(cell.VARIABLES):
         for c, term in enumerate(cell.TERMS):
-            mask[a * cell.N_TERMS + c] = name == "m" or "m" in term
+            used = term_variables(term)
+            mask[a * cell.N_TERMS + c] = (name in active and used <= set(active)
+                                          and not (name in frozen and used <= set(frozen)))
     return mask
 
 
+def _whole(base, free, x) -> np.ndarray:
+    """The whole rule from the free coefficients' values."""
+    rule = base.copy()
+    rule[free] = np.asarray(x)
+    return rule
+
+
 def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: float, sigma: float = 1.0,
-           sigma_m: float | None = None) -> None:
-    """sigma_m, if given, is the starting spread for the coefficients to do with m (so a rule found without m can be
-    searched gently while m's new terms explore)."""
+           free: np.ndarray | None = None) -> None:
+    """free (free_mask) says which coefficients the search may change; the rest stay at start's values."""
     import cma
     KERNELS.mkdir(exist_ok=True)
-    x0 = np.zeros(cell.N_PARAMS) if start is None else start
-    options = {"popsize": POPULATION, "verbose": -9, "seed": 1}
-    if sigma_m is not None:
-        options["CMA_stds"] = np.where(involves_m(), sigma_m / sigma, 1.0)
-    es = cma.CMAEvolutionStrategy(x0, sigma, options)
+    base = np.zeros(cell.N_PARAMS) if start is None else start.copy()
+    free = np.ones(cell.N_PARAMS, dtype=bool) if free is None else free
+    whole = lambda x: _whole(base, free, x)
+    es = cma.CMAEvolutionStrategy(base[free], sigma, {"popsize": POPULATION, "verbose": -9, "seed": 1})
     validation = range(10**6, 10**6 + VALIDATION)
     best = -math.inf
     rng = np.random.default_rng(0)
@@ -182,9 +199,9 @@ def evolve(task: str, generations: int, start: np.ndarray | None, sparsity: floa
         for generation in range(generations):
             candidates = es.ask()
             seeds = [int(s) for s in rng.integers(0, 10**6, LIVES)]
-            fitness = pool.map(_job, [(np.asarray(c), task, seeds, sparsity) for c in candidates])
+            fitness = pool.map(_job, [(whole(c), task, seeds, sparsity) for c in candidates])
             es.tell(candidates, [-f for f in fitness])
-            mean = np.asarray(es.mean)
+            mean = whole(es.mean)
             jobs = [(mean, task, s, dt) for dt in CHECK_DTS for s in validation]
             per = np.array(pool.map(_score_one, jobs)).reshape(len(CHECK_DTS), len(validation)).mean(axis=1)
             valid = float(per.min())
@@ -235,8 +252,9 @@ if __name__ == "__main__":
     parser.add_argument("--from", dest="start")
     parser.add_argument("--sparsity", type=float, default=0.01)
     parser.add_argument("--sigma", type=float, default=1.0, help="the search's starting spread (smaller from a kernel)")
-    parser.add_argument("--sigma-m", type=float, help="the starting spread for the coefficients to do with m")
+    parser.add_argument("--variables", default=",".join(cell.VARIABLES), help="the variables in use, e.g. v,w")
+    parser.add_argument("--freeze", default="", help="variables whose rule (among themselves) stays as --from's")
     args = parser.parse_args()
-    evolve(args.task, args.generations, load(args.start) if args.start else None, args.sparsity, args.sigma,
-           args.sigma_m)
+    free = free_mask(args.variables.split(","), [x for x in args.freeze.split(",") if x])
+    evolve(args.task, args.generations, load(args.start) if args.start else None, args.sparsity, args.sigma, free)
     print(cell.describe(load(KERNELS / f"{args.task}.json")))

@@ -127,7 +127,7 @@ python paths.py --watch                      # watch it live: space pauses, up/d
 python paths.py --seed 1 --picture g.png     # run a life and save g's development as a strip of 8 pictures
 ```
 
-**Done so far:** a tree grows out of the source, two branches find the sink, and the sheet settles into a loop of two paths several cells wide (about 15% of cells conducting), at two seeds and tick sizes 0.25 and 0.5. **Next:** make the competition pick one route and thin it (stronger competition once joined, or an inhibitor that keeps paths apart); remove the diagonal bias (weight diagonal neighbours less); then two sinks with different drains (does the harder one win the path?), several sources and sinks, and growth from a tip as the alternative route.
+**Done so far:** with diagonal neighbours weighted less and growth that isn't saturated, a single thin path grows from the source, tip first, and reaches the sink (about 3% of cells conducting), at two seeds and two tick sizes. A sink draining twice as hard didn't win the path from another. **Next:** move the source or the sink once the path has formed (`--move sink 300000 8`): does the path die and regrow, or drift? Then several sources and sinks, and whether drain strength matters at all.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.
 

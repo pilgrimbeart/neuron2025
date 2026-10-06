@@ -117,17 +117,25 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 
 ## Next goal
 
-**Grow wiring across a bare sheet: first one path from a source to a sink.** No spikes, no robot, no meaning attached to either end: the first step towards a sheet that grows its own wiring (`LESSONS.md`, "Growing wiring"). The physics is chosen by hand, with a few knobs, in `paths.py`:
-- a quiet chemical c, kicked in pulses at the source and drained at the sink, spreading through conductance;
-- a conductance g per cell, starting at about 1 everywhere (a dense sheet, to be pruned), which grows with the flow through the cell and slowly decays, never below a floor;
-- the flow a cell senses is how steep c is around it (from the mean of the squared differences from its neighbours), which needs no sense of direction.
+**Grow wiring across a bare sheet: one network joining every source and every sink.** No spikes, no robot, no meaning attached to the ends: the first step towards a sheet that grows its own wiring (`LESSONS.md`, "Growing wiring"). Not a path for every pair (12 inputs × 6 thrusters would be 72), but one shared network in which every source can reach every sink through junctions, where paths converge and diverge; later, learning lives at the junctions (how much of a signal goes down each branch), while the wiring itself is grown by development.
+
+`paths.py`, in two tricks: **sinks send out waves**, and **each cell remembers which neighbour the wave came from** (a breadcrumb). A source is on the path, and so is any cell a path cell's breadcrumb points to: a path is the trail of breadcrumbs from a source to the nearest sink. When the waves stop, cells forget, and the path vanishes. (Subtext: waves rest after passing, so they only go outwards; a breadcrumb is kept unless the wave now comes clearly shorter another way; ends are pulsed; cells update at random times; distances carry noise.)
 
 ```bash
-python paths.py --watch                      # watch it live: space pauses, up/down change speed
-python paths.py --seed 1 --picture g.png     # run a life and save g's development as a strip of 8 pictures
+python paths.py --watch --sources "8,45 24,45 40,45" --sinks "12,2 36,2"   # s / k add an end at the mouse (or remove one there), r restarts
+python paths.py --picture net.png --sources "8,45 24,45 40,45" --sinks "12,2 36,2"
 ```
 
-**Done so far:** with diagonal neighbours weighted less and growth that isn't saturated, a single thin path grows from the source, tip first, and reaches the sink (about 3% of cells conducting), at two seeds and two tick sizes. A sink draining twice as hard didn't win the path from another. **Next:** move the source or the sink once the path has formed (`--move sink 300000 8`): does the path die and regrow, or drift? Then several sources and sinks, and whether drain strength matters at all.
+**Done so far:**
+- **A first rule, by flow** (a chemical drained at the sink, conductance growing with flow; git tag `exp/paths-flow`): a single thin path, repaired locally when an end moves, but in about 600,000 ticks.
+- **Distances by the minimum of the neighbours** (in git history before the wave rule): fast, but stale values circulated after an end went ("count to infinity"), and every fix cost stability elsewhere.
+- **The wave rule (breadcrumbs):** every source joins its nearest sink in every test scene, seed and tick size, with noise and random update times; paths are as short as straight lines; when a sink moves, the path re-forms on the new shortest route; when sinks go, paths vanish. Works on 96×96 too.
+
+**Persistent, quiet wiring** (on by default): a sink calls only while hungry (no pulse has reached it lately), and a path lives as long as its sink thanks it (an acknowledgement passed back up the path for each pulse that arrives). Once wired, the sheet falls silent and the paths stay; damage, moved or removed ends make sinks hungry or sources lonely, and the network re-wires, then falls quiet again.
+
+**Crossing and learning (experiments in `LESSONS.md`, "Growing wiring"):** crossed wiring for approach works with one set of variables per thruster (all 12 inputs of a robot-like ring reach their opposite thruster), or with no crossing at all if thrusters pull towards their own side (one channel). One bit was learned on a grown path: pulses along it, a trace at each input, and a bad taste closing the gate of a recently active input; the poison colour stopped reaching the thruster after its first visit, the other carried on.
+
+**Next:** quiet networks that stay in place once formed (plasticity: today a path exists only while waves keep coming); every source reaching every sink rather than only the nearest (a network with junctions); then carry pulses along the paths and put learning at the junctions.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.
 

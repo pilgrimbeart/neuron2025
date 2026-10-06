@@ -1,25 +1,46 @@
-"""Growing a path: can a bare sheet wire a source to a sink by itself? (README, "Next goal"; LESSONS.md, "Growing
-wiring".)
+"""Growing wiring: can a bare sheet wire its sources to its sinks by itself? (README, "Next goal"; LESSONS.md,
+"Growing wiring". The earlier, slow flow rule is at git tag exp/paths-flow.)
 
-    python paths.py [--seed N] [--dt X] [--time T] [--sinks 1|2] [--drains 2,1] [--move source|sink TIME ROW]
-                    [--picture FILE.png] [--watch]
+    python paths.py [--sources R,C ...] [--sinks R,C ...] [--seed N] [--dt X] [--time T] [--clean]
+                    [--move source|sink TIME ROW COLUMN] [--picture FILE.png] [--watch [--title T]]
 
-A square sheet of identical cells, each holding two numbers:
-  c   a quiet chemical. The source cell is kicked (pulses at random times, RATE per unit time, KICK each); each sink
-      cell drains it (losing DRAIN x c per unit time, a sink with drain 2 twice as hard). Between cells it spreads
-      through conductance: a cell gains SPREAD x g x (the mean over its neighbours of g' x (c' - c)), so it passes
-      only between cells that both conduct.
-  g   conductance, 0..1, starting near 1 everywhere (a dense sheet, to be pruned). It grows with the flow through the
-      cell and decays without it: g += (GROW x f(q) - DECAY x g) x dt, where q is the flow, and f(q) = q^POWER /
-      (HALF^POWER + q^POWER) rises faster than in proportion at first (POWER above 1), so paths carrying more take
-      flow from the rest (slime mould's rule, Tero et al. 2007).
-The flow through a cell is q = g x sqrt(mean over neighbours of g' x (c' - c)^2): large where c is steep around it in
-any direction, so a cell needs no sense of direction or position. A cell sees only its own numbers and the (weighted)
-means of a few of them over its up to 8 neighbours (g', g'c', g'c'^2), and the edge of the sheet is just missing neighbours.
+Two tricks:
+  1. Sinks send out waves, which count their steps.
+  2. Each cell remembers which neighbour the wave came from (its breadcrumb). A source is on the path, and so is any
+     cell a path cell's breadcrumb points to: a path is the trail of breadcrumbs from a source to the nearest sink.
+When the waves stop, cells forget their breadcrumbs, and the path vanishes.
 
---move makes the source (or the first sink) jump to another row of its edge at a given time, to see whether the
-wiring follows. Measured at the end: whether source and sink are joined through conducting cells (g above HALF_ON), how much of the
-sheet conducts, and how long the path is against a straight line (shortest route through conducting cells).
+And two more, so that a wired sheet falls quiet and the wiring stays (PERSIST):
+  3. A sink calls (sends waves) only while it is hungry: no pulse has reached it for a while (HUNGER). Pulses run
+     along paths (a source kick sends one; each path cell passes it to the cell its breadcrumb names), so once a path
+     delivers, its sink stops calling, and the sheet goes quiet.
+  4. A path lives as long as its sink thanks it: a sink that receives a pulse sends an acknowledgement back up the
+     path, which refreshes the breadcrumbs as waves do (the retrograde growth factor that keeps a neuron's
+     connection alive). A path to a vanished sink is no longer thanked, and is forgotten. And a cell thanked within
+     KEEP keeps its breadcrumb whatever waves pass: if it works, it isn't changed.
+Subtext for these: a source not thanked for a while (lonely) sends out a bare request wave, and a sink it reaches
+calls for CALL time, so new and stranded sources get wired even when the sinks are fed; pulses and acknowledgements
+are passed for PULSE_TIME and then rest only briefly (PULSE_REST: a longer rest let bunched-up pulses die).
+
+The subtext, for a noisy world:
+  - Waves: a cell next to an excited one becomes excited for EXCITED time, carrying the smallest of its excited
+    neighbours' counts plus the step (1, or sqrt 2 diagonally, so that space is round), then rests for REFRACTORY
+    time, so waves only travel outwards, and collide and vanish. EXCITED is long enough that a cell rarely misses a
+    wave even though it updates at random times, and REFRACTORY long enough that one that did can't send a wave back
+    into cells ready again (re-entry). The count must be carried: with random update times, the order in which
+    neighbours are woken is close to a coin toss, but the count isn't affected.
+  - Breadcrumbs are settled when the wave has passed: while excited, a cell watches the ways the wave comes; it keeps
+    its breadcrumb if the wave came through it (with a smaller count) nearly as short as the best way (within
+    MARGIN), and otherwise takes the best way. So breadcrumbs change only when the waves stop coming that way (a sink
+    moved, or a shorter way opened), not with noise, and they never loop. Each cell's breadcrumb names a neighbour by
+    its tag, a random name it is born with (nothing about position).
+  - Forgetting: a cell that has had no wave for EXPIRE time forgets its breadcrumb.
+  - Ends are kicked at random times by the world (RATE per unit time, as sensors are); kicks top up a hold that fades
+    (HOLD_FADE), and a cell is a source (or sink) while its hold is above 1/2; a sink kick also sends a wave.
+  - Every cell updates at random times (each tick with chance UPDATE), and each count gets random jitter (JITTER;
+    --clean turns it off).
+
+Measured: which pairs of a source and a sink are joined through path cells, and how much of the sheet is path.
 """
 
 from __future__ import annotations
@@ -29,32 +50,36 @@ from collections import deque
 from dataclasses import dataclass, replace
 
 import numpy as np
+from numba import njit
 
 SIZE = 48
-SPREAD = 1.0        # how fast c spreads through conducting cells
-RATE = 0.5          # source pulses per unit time
-KICK = 1.0          # c added per pulse
-DRAIN = 0.5         # the sink's drain per unit time, x c
-GROW = 1.5e-4       # g's growth per unit time at full flow
-DECAY = 1e-4        # g's decay per unit time: slow, so that c spreads across the sheet before g has changed
-POWER = 3.0         # how much faster than in proportion flow reinforces
-HALF = 0.25         # the flow at which growth is half its full rate
-NOISE = 0.05        # g starts at 1 - uniform(0, NOISE)
-FLOOR = 0.1         # g never falls below this: a cell that has stopped conducting still leaks a little
-DIAGONAL = 0.25     # a diagonal neighbour's weight, against 1 for the four beside a cell (the isotropic choice)
-HALF_ON = 0.5       # a cell conducts when g is above this
-SOURCE = (SIZE // 2, SIZE - 3)                                      # (row, column): by the right edge
-SINKS = {1: ((SIZE // 2, 2),), 2: ((SIZE // 4, 2), (3 * SIZE // 4, 2))}   # by the left edge
+RATE = 0.5          # end kicks per unit time
+HOLD_FADE = 0.05    # how fast an end cell's hold fades per unit time (kicks top it up)
+EXCITED = 16.0      # how long a cell stays excited when a wave passes
+REFRACTORY = 40.0   # how long it is then refractory (longer than EXCITED, so a wave can't turn back)
+EXPIRE = 200.0      # how long a cell keeps its breadcrumb without a wave (more than a wave period)
+FAR = 1000.0        # no count known
+UPDATE = 0.5        # the chance that a cell updates in a tick (never all at once)
+JITTER = 0.01       # random jitter in each count a wave carries
+MARGIN = 0.1        # how much longer (a fraction) the way through its breadcrumb may be before a cell switches
+PERSIST = True      # pulses along paths, acknowledgements back, and sinks that send waves only when hungry
+PULSE_TIME = 8.0    # how long a cell passes a pulse (or an acknowledgement) on: long enough for random updates
+PULSE_REST = 2.0   # how long it then rests from passing another
+CALL = 150.0        # how long a sink keeps calling (sending waves) after a request reaches it, fed or not
+KEEP = 50.0         # a cell thanked within this long keeps its breadcrumb whatever waves pass (in use: leave it)
+HUNGER = 200.0      # a sink sends waves only after this long without receiving a pulse
+HALF_ON = 0.5       # a cell is path when p is above this
 
 
 @dataclass(frozen=True)
 class Ends:
-    """Where the source and sinks are, how hard each sink drains, and optionally a move: at a given time the source
-    (or the first sink) jumps to another cell."""
-    source: tuple = SOURCE
-    sinks: tuple = SINKS[1]
-    drains: tuple = (1.0, 1.0)
-    move: tuple | None = None       # (time, "source" or "sink", (row, column))
+    """Where the sources and sinks are, and optionally a move: at a given time the first source (or sink) jumps to
+    another cell."""
+    sources: tuple = ((SIZE // 2, SIZE - 3),)       # (row, column): by the right edge
+    sinks: tuple = ((SIZE // 2, 2),)                # by the left edge
+    move: tuple | None = None                       # (time, "source" or "sink", (row, column))
+    cuts: tuple = ()                                # cells that can't be on a path (waves still pass)
+    walls: tuple = ()                               # cells that waves can't pass (so paths go round)
 
     def at(self, time: float) -> "Ends":
         """The ends in place at this time."""
@@ -62,72 +87,206 @@ class Ends:
             return self
         _, what, cell = self.move
         if what == "source":
-            return replace(self, source=cell, move=None)
+            return replace(self, sources=(cell,) + self.sources[1:], move=None)
         return replace(self, sinks=(cell,) + self.sinks[1:], move=None)
 
 
-def neighbour_sum(x: np.ndarray) -> np.ndarray:
-    """Each cell's weighted sum of x over its up to 8 neighbours (missing ones beyond the edge count as nothing):
-    the 4 beside it weigh 1, the 4 diagonal ones DIAGONAL, so that spreading doesn't favour the diagonals."""
-    p = np.pad(x, 1)
-    return sum((DIAGONAL if dy and dx else 1.0) * p[1 + dy:1 + dy + SIZE, 1 + dx:1 + dx + SIZE]
-               for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0))
+@njit(cache=True)
+def _seed(seed):
+    np.random.seed(seed)
 
 
-COUNT = neighbour_sum(np.ones((SIZE, SIZE)))
+def knobs() -> np.ndarray:
+    """The rule's numbers, as `_ticks` takes them (read when a life starts)."""
+    return np.array([RATE, HOLD_FADE, EXCITED, REFRACTORY, EXPIRE, FAR, UPDATE, JITTER, MARGIN,
+                     1.0 if PERSIST else 0.0, PULSE_TIME, PULSE_REST, HUNGER, CALL, KEEP])
 
 
-def mean(x: np.ndarray) -> np.ndarray:
-    return neighbour_sum(x) / COUNT
+# The cells' numbers, one layer each: the wave (excited and refractory time left, the count it carried here), the
+# breadcrumb (the tag of the neighbour the wave came from) and what the cell watched while excited (the count via its
+# breadcrumb, the best count and whose), when a wave last came, the ends' holds, and whether it is on the path.
+# And, for persistence: a pulse passing along the path (firing and resting time left), an acknowledgement passing back
+# up it (the same), the time since a sink last received a pulse, and how many pulses it has received.
+# And the request waves lonely sources send (excited and resting time left), and how long since a source was thanked.
+(EXCITED_LEFT, RESTING_LEFT, COUNT, CRUMB, VIA_CRUMB, BEST, BEST_CRUMB, AGE, SOURCE, SINK, PATH,
+ FIRE_LEFT, FIRE_REST, ACK_LEFT, ACK_REST, FED, ARRIVED, ASK_LEFT, ASK_REST, LONELY, CALLING, THANKED) = range(22)
+LAYERS = 22
 
 
-def flow(c: np.ndarray, g: np.ndarray) -> np.ndarray:
-    """q: g x the root mean of g' (c' - c)^2 over the neighbours, from the means of g', g'c' and g'c'^2."""
-    square = mean(g * c * c) - 2 * c * mean(g * c) + c * c * mean(g)
-    return g * np.sqrt(np.maximum(square, 0.0))
+@njit(cache=True)
+def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
+    """ticks ticks. s holds the cells' numbers (the layers above), s2 is scratch, tag is each cell's name, and
+    is_source and is_sink mark the cells the world kicks. First every cell's clocks run and the ends get their kicks;
+    then each cell, with chance UPDATE, updates from its own numbers and its neighbours' (see the module's
+    description)."""
+    rate, fade, excited, refractory, expire, far, update, jitter, margin = (
+        k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8])
+    persist, pulse_time, pulse_rest, hunger, call, keep = k[9] > 0.5, k[10], k[11], k[12], k[13], k[14]
+    n = s.shape[1]
+    root2 = np.sqrt(2.0)
+    for _ in range(ticks):
+        for y in range(n):
+            for x in range(n):
+                s[AGE, y, x] += dt
+                if s[EXCITED_LEFT, y, x] > 0.0:
+                    s[EXCITED_LEFT, y, x] -= dt
+                    if s[EXCITED_LEFT, y, x] <= 0.0:                # the wave has passed: rest, and settle the
+                        s[EXCITED_LEFT, y, x] = 0.0                 # breadcrumb (kept unless the best way was
+                        s[RESTING_LEFT, y, x] = refractory          # clearly shorter; a sink has none)
+                        if (s[VIA_CRUMB, y, x] > s[BEST, y, x] * (1.0 + margin) and s[BEST_CRUMB, y, x] >= 0.0
+                                and s[SINK, y, x] <= 0.5 and (not persist or s[THANKED, y, x] > keep)):
+                            s[CRUMB, y, x] = s[BEST_CRUMB, y, x]
+                elif s[RESTING_LEFT, y, x] > 0.0:
+                    s[RESTING_LEFT, y, x] = max(0.0, s[RESTING_LEFT, y, x] - dt)
+                s[FED, y, x] += dt
+                s[LONELY, y, x] += dt
+                s[CALLING, y, x] = max(0.0, s[CALLING, y, x] - dt)
+                s[THANKED, y, x] += dt
+                if s[ASK_LEFT, y, x] > 0.0:                         # request waves: excited, then resting
+                    s[ASK_LEFT, y, x] -= dt
+                    if s[ASK_LEFT, y, x] <= 0.0:
+                        s[ASK_LEFT, y, x], s[ASK_REST, y, x] = 0.0, refractory
+                elif s[ASK_REST, y, x] > 0.0:
+                    s[ASK_REST, y, x] = max(0.0, s[ASK_REST, y, x] - dt)
+                for left, rest in ((FIRE_LEFT, FIRE_REST), (ACK_LEFT, ACK_REST)):   # pulses and acknowledgements
+                    if s[left, y, x] > 0.0:                                         # pass, then rest
+                        s[left, y, x] -= dt
+                        if s[left, y, x] <= 0.0:
+                            s[left, y, x], s[rest, y, x] = 0.0, pulse_rest
+                    elif s[rest, y, x] > 0.0:
+                        s[rest, y, x] = max(0.0, s[rest, y, x] - dt)
+                s[SOURCE, y, x] *= 1.0 - fade * dt                  # the ends' holds fade; kicks top them up
+                s[SINK, y, x] *= 1.0 - fade * dt
+                if is_source[y, x] and np.random.random() < rate * dt:
+                    s[SOURCE, y, x] += 1.0
+                    if (persist and s[PATH, y, x] > 0.5 and s[FIRE_LEFT, y, x] == 0.0
+                            and s[FIRE_REST, y, x] == 0.0):             # a source kick sends a pulse down the path
+                        s[FIRE_LEFT, y, x] = pulse_time
+                    if (persist and s[LONELY, y, x] > hunger and s[ASK_LEFT, y, x] == 0.0
+                            and s[ASK_REST, y, x] == 0.0):              # a lonely source asks, with a request wave
+                        s[ASK_LEFT, y, x] = excited
+                if is_sink[y, x] and np.random.random() < rate * dt:
+                    s[SINK, y, x] += 1.0
+                    if (s[EXCITED_LEFT, y, x] == 0.0 and s[RESTING_LEFT, y, x] == 0.0
+                            and (not persist or s[FED, y, x] > hunger or s[CALLING, y, x] > 0.0)):
+                        # a sink's kick sends a wave while it is hungry, or calling because it was asked
+                        s[EXCITED_LEFT, y, x], s[COUNT, y, x], s[AGE, y, x] = excited, 0.0, 0.0
+                        s[CRUMB, y, x], s[VIA_CRUMB, y, x], s[BEST, y, x], s[BEST_CRUMB, y, x] = -1.0, 0.0, far, -1.0
+        s2[:, :, :] = s
+        for y in range(n):
+            for x in range(n):
+                if np.random.random() >= update:
+                    continue
+                best, best_crumb = far, -1.0                # the best way the wave comes: count + step, and whose
+                via_crumb = far                             # the way it comes through my breadcrumb
+                named = False                               # a path cell's breadcrumb points to me
+                fired_at = False                            # ... and it is passing me a pulse
+                acked = False                               # the cell my breadcrumb names is passing back an ack
+                asked = False                               # a neighbour is passing on a request wave
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        yy, xx = y + dy, x + dx
+                        if not ((dy or dx) and 0 <= yy < n and 0 <= xx < n):
+                            continue
+                        if s[EXCITED_LEFT, yy, xx] > 0.0:
+                            v = s[COUNT, yy, xx] + (root2 if dy and dx else 1.0)
+                            if v < best:
+                                best, best_crumb = v, tag[yy, xx]
+                            if tag[yy, xx] == s[CRUMB, y, x] and s[COUNT, yy, xx] < s[COUNT, y, x]:
+                                via_crumb = v
+                        if s[PATH, yy, xx] > 0.5 and s[CRUMB, yy, xx] == tag[y, x]:
+                            named = True
+                            if s[FIRE_LEFT, yy, xx] > 0.0:
+                                fired_at = True
+                        if tag[yy, xx] == s[CRUMB, y, x] and s[ACK_LEFT, yy, xx] > 0.0:
+                            acked = True
+                        if s[ASK_LEFT, yy, xx] > 0.0:
+                            asked = True
+                if s[EXCITED_LEFT, y, x] > 0.0:             # excited: take a smaller count, and watch the ways
+                    if best < s[COUNT, y, x] and s[COUNT, y, x] > 0.0:
+                        s2[COUNT, y, x] = best
+                    if via_crumb < s[VIA_CRUMB, y, x]:
+                        s2[VIA_CRUMB, y, x] = via_crumb
+                    if best < s[BEST, y, x]:
+                        s2[BEST, y, x], s2[BEST_CRUMB, y, x] = best, best_crumb
+                elif s[RESTING_LEFT, y, x] == 0.0 and best < far and not is_wall[y, x]:   # ready, next to the wave
+                    s2[EXCITED_LEFT, y, x] = excited
+                    s2[COUNT, y, x] = best + jitter * np.random.standard_normal()
+                    s2[AGE, y, x] = 0.0
+                    s2[VIA_CRUMB, y, x], s2[BEST, y, x], s2[BEST_CRUMB, y, x] = via_crumb, best, best_crumb
+                if persist and s[PATH, y, x] > 0.5:
+                    if fired_at and s[FIRE_LEFT, y, x] == 0.0 and s[FIRE_REST, y, x] == 0.0:
+                        s2[FIRE_LEFT, y, x] = pulse_time            # the pulse passes on
+                        if s[SINK, y, x] > 0.5:                     # a sink fed: it acknowledges
+                            s2[FED, y, x], s2[ARRIVED, y, x] = 0.0, s[ARRIVED, y, x] + 1.0
+                            s2[ACK_LEFT, y, x] = pulse_time
+                    if acked and s[ACK_LEFT, y, x] == 0.0 and s[ACK_REST, y, x] == 0.0:
+                        s2[ACK_LEFT, y, x] = pulse_time             # the acknowledgement passes back up,
+                        s2[AGE, y, x] = 0.0                         # refreshing the breadcrumb as a wave would
+                        s2[THANKED, y, x] = 0.0                     # (and while thanked, it keeps it: in use)
+                        if s[SOURCE, y, x] > 0.5:
+                            s2[LONELY, y, x] = 0.0                  # a source thanked is not lonely
+                if persist and asked and s[ASK_LEFT, y, x] == 0.0 and s[ASK_REST, y, x] == 0.0 and not is_wall[y, x]:
+                    s2[ASK_LEFT, y, x] = excited                    # the request wave passes on; a sink it
+                    if s[SINK, y, x] > 0.5:                         # reaches calls, for a while
+                        s2[CALLING, y, x] = call
+                if s[AGE, y, x] >= expire and s2[AGE, y, x] >= expire:  # no wave for a long while: forget
+                    s2[CRUMB, y, x] = -1.0
+                s2[PATH, y, x] = 1.0 if (s[SOURCE, y, x] > 0.5 or named) and not is_cut[y, x] else 0.0
+        s[:, :, :] = s2
 
 
-def life(seed: int = 0, dt: float = 0.5, ends: Ends = Ends()):
-    """One life, tick by tick, without end: yields (time, g, c, the ends in place) after each tick (the same arrays,
-    changed in place)."""
+def life(seed: int = 0, dt: float = 1.0, ends: Ends = Ends()):
+    """One life, without end: yields (time, path, the ends in place) after every tick (path is the same array,
+    changed in place). Sending it new Ends moves the ends."""
     rng = np.random.default_rng(seed)
-    g = 1.0 - rng.uniform(0, NOISE, (SIZE, SIZE))
-    c = np.zeros((SIZE, SIZE))
-    step, now = 0, None
+    s = np.zeros((LAYERS, SIZE, SIZE))
+    s[COUNT], s[AGE], s[CRUMB], s[VIA_CRUMB], s[BEST], s[BEST_CRUMB] = FAR, EXPIRE + 1.0, -1.0, FAR, FAR, -1.0
+    s[FED] = 1e9                                    # sinks are born hungry
+    s[LONELY] = 0.0                                 # sources are not yet lonely
+    s[THANKED] = 1e9                                # nothing has been thanked
+    s2 = np.empty_like(s)
+    tag = rng.random((SIZE, SIZE))                  # each cell's name, from birth: random, nothing about position
+    k = knobs()
+    _seed(seed)
+    step = 0
     while True:
-        if ends.at(step * dt) != now:
-            now = ends.at(step * dt)
-            drain = np.zeros((SIZE, SIZE))
-            for cell, strength in zip(now.sinks, now.drains):
-                drain[cell] = DRAIN * strength
-        c += SPREAD * g * (mean(g * c) - c * mean(g)) * dt
-        c -= drain * c * dt
-        c[now.source] += KICK * rng.poisson(RATE * dt)
-        q = flow(c, g)
-        g += (GROW * q ** POWER / (HALF ** POWER + q ** POWER) - DECAY * g) * dt
-        np.clip(g, FLOOR, 1.0, out=g)
+        now = ends.at(step * dt)
+        is_source, is_sink = np.zeros((SIZE, SIZE), np.bool_), np.zeros((SIZE, SIZE), np.bool_)
+        for cell in now.sources:
+            is_source[cell] = True
+        for cell in now.sinks:
+            is_sink[cell] = True
+        is_cut, is_wall = np.zeros((SIZE, SIZE), np.bool_), np.zeros((SIZE, SIZE), np.bool_)
+        for cell in now.cuts:
+            is_cut[cell] = True
+        for cell in now.walls:
+            is_wall[cell] = True
+        _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, 1, dt, k)
         step += 1
-        yield step * dt, g, c, now
+        sent = yield step * dt, s[PATH], now
+        if sent is not None:                        # new ends, sent in (the live view's keys)
+            ends = sent
 
 
-def grow(seed: int = 0, dt: float = 0.5, time: float = 300000.0, ends: Ends = Ends(), snapshots=8):
-    """A life of the given length. Returns (g at the end, c at the end, the ends in place at the end, pictures of g at
-    evenly spaced moments with the ends marked mid-grey)."""
-    steps = int(round(time / dt))
+def grow(seed: int = 0, dt: float = 1.0, time: float = 300.0, ends: Ends = Ends(), snapshots=8):
+    """A life of the given length. Returns (p at the end, the ends in place at the end, pictures of p at evenly spaced
+    moments with the ends marked mid-grey)."""
+    ticks = max(1, int(round(time / dt)))
     pictures = []
-    for step, (_, g, c, now) in zip(range(steps), life(seed, dt, ends)):
-        if (step + 1) % max(1, steps // snapshots) == 0:
-            picture = g.copy()
-            for cell in (now.source,) + now.sinks:
+    for i, (_, p, now) in zip(range(ticks), life(seed, dt, ends)):
+        if (i + 1) % max(1, ticks // snapshots) == 0:
+            picture = p.copy()
+            for cell in now.sources + now.sinks:
                 picture[cell] = 0.5
             pictures.append(picture)
-    return g, c, now, pictures
+    return p, now, pictures
 
 
-def route(g: np.ndarray, start, end):
-    """The shortest route from start to end through conducting cells (8-connected), as a number of steps; None if
-    they aren't joined."""
-    on = g > HALF_ON
+def route(p: np.ndarray, start, end):
+    """The shortest route from start to end through path cells (8-connected), as a number of steps; None if they
+    aren't joined."""
+    on = p > HALF_ON
     if not (on[start] and on[end]):
         return None
     seen = {start: 0}
@@ -145,14 +304,10 @@ def route(g: np.ndarray, start, end):
     return None
 
 
-def report(g: np.ndarray, ends: Ends) -> str:
-    parts = [f"conducting {100 * (g > HALF_ON).mean():5.1f}% of cells"]
-    for end in ends.sinks:
-        steps = route(g, ends.source, end)
-        straight = max(abs(end[0] - ends.source[0]), abs(end[1] - ends.source[1]))
-        parts.append(f"to sink {end}: " + (f"joined, path {steps} steps ({steps / straight:.2f} x straight)"
-                                           if steps is not None else "not joined"))
-    return "; ".join(parts)
+def report(p: np.ndarray, ends: Ends) -> str:
+    joined = sum(route(p, a, b) is not None for a in ends.sources for b in ends.sinks)
+    pairs = len(ends.sources) * len(ends.sinks)
+    return f"path {100 * (p > HALF_ON).mean():5.1f}% of cells ({(p > HALF_ON).sum()}); {joined}/{pairs} source-sink pairs joined"
 
 
 def save_pictures(pictures, path: str, scale: int = 4) -> None:
@@ -164,68 +319,112 @@ def save_pictures(pictures, path: str, scale: int = 4) -> None:
     pygame.image.save(surface, path)
 
 
-def watch(seed: int = 0, dt: float = 0.5, ends: Ends = Ends(), scale: int = 14) -> None:
-    """A life, live: g in grey (0 black, 1 white), the source lettered S and the sinks K. Space pauses; up and down
-    arrows change how many ticks pass per frame; Escape quits."""
+def watch(seed: int = 0, dt: float = 1.0, ends: Ends = Ends(), scale: int = 14, title: str = "paths") -> None:
+    """A life, live, in greys: waves dark grey, the path light grey, pulses and acknowledgements on it white, damage
+    mid-grey; sources lettered S and sinks K. Keys at the mouse: s or k adds a source or sink, or, over an end (within
+    a cell), removes it; x damages a 3x3 patch (cells that carry neither waves nor path), or repairs it if damaged; r
+    restarts the life with the ends as they are; space pauses; up and down arrows change how many ticks pass per
+    frame; Escape quits."""
     import pygame
     pygame.init()
     side = SIZE * scale
-    screen = pygame.display.set_mode((side, side + 30))
-    pygame.display.set_caption("paths: growing a path")
+    screen = pygame.display.set_mode((side, side + 50))
+    pygame.display.set_caption(title)
     font = pygame.font.SysFont(None, 24)
-    ticks_per_frame, paused = 200, False
+    ticks_per_frame, paused = 1, False
     clock = pygame.time.Clock()
-    for time, g, c, now in life(seed, dt, ends):
+    lives = life(seed, dt, ends)
+    moved, restarted = None, False
+    while True:
+        time, p, now = lives.send(moved) if moved else next(lives)
+        moved, restarted = None, False
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     pygame.quit()
                     return
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                if event.type != pygame.KEYDOWN:
+                    continue
+                mx, my = pygame.mouse.get_pos()
+                cell = (my // scale, mx // scale)
+                base = moved or now
+                if event.key in (pygame.K_s, pygame.K_k) and 0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE:
+                    near = lambda c: max(abs(c[0] - cell[0]), abs(c[1] - cell[1])) <= 1
+                    if any(near(c) for c in base.sources + base.sinks):          # over an end: remove it
+                        moved = replace(base, move=None, sources=tuple(c for c in base.sources if not near(c)),
+                                        sinks=tuple(c for c in base.sinks if not near(c)))
+                    else:                                                       # elsewhere: add one
+                        kind = "sources" if event.key == pygame.K_s else "sinks"
+                        moved = replace(base, move=None, **{kind: getattr(base, kind) + (cell,)})
+                if event.key == pygame.K_x and 0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE:   # damage, or repair
+                    patch = {(cell[0] + dy, cell[1] + dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+                    damaged = set(base.walls)
+                    damaged = damaged - patch if cell in damaged else damaged | patch
+                    moved = replace(base, move=None, walls=tuple(sorted(damaged)), cuts=tuple(sorted(damaged)))
+                if event.key == pygame.K_r:                                     # restart, with the ends as they are
+                    lives = life(seed, dt, replace(base, move=None))
+                    moved = None
+                    restarted = True
+                if event.key == pygame.K_SPACE:
                     paused = not paused
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_UP:
+                if event.key == pygame.K_UP:
                     ticks_per_frame *= 2
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_DOWN:
+                if event.key == pygame.K_DOWN:
                     ticks_per_frame = max(1, ticks_per_frame // 2)
-            if not paused:
+            if not paused or moved or restarted:
                 break
             clock.tick(30)
         if int(round(time / dt)) % ticks_per_frame:
             continue
-        grey = (255 * g).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
+        state = lives.gi_frame.f_locals["s"]
+        shade = np.where(state[EXCITED_LEFT] > 0, 0.25, 0.0)                # waves
+        shade = np.where(p > 0.5, 0.7, shade)                               # the path
+        shade = np.where((p > 0.5) & ((state[FIRE_LEFT] > 0) | (state[ACK_LEFT] > 0)), 1.0, shade)   # pulses, thanks
+        for c in now.walls:
+            shade[c] = 0.45                                                 # damage
+        grey = (255 * shade).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
         screen.fill((0, 0, 0))
         screen.blit(pygame.surfarray.make_surface(np.stack([grey] * 3, axis=-1)), (0, 0))
-        for (r, k), letter in [(now.source, "S")] + [(end, "K") for end in now.sinks]:
+        for (r, k), letter in [(c, "S") for c in now.sources] + [(c, "K") for c in now.sinks]:
             label = font.render(letter, True, (255, 255, 255), (90, 90, 90))
             screen.blit(label, (k * scale, r * scale))
-        status = (f"time {time:9.0f}   conducting {100 * (g > HALF_ON).mean():5.1f}%   {ticks_per_frame} ticks per frame"
-                  f"   space: pause, up/down: speed, Esc: quit")
+        status = f"time {time:7.0f}   {report(p, now)}   {ticks_per_frame} ticks per frame"
+        keys = "mouse: s/k add or remove an end, x damage or repair   r restart   space   up/down   Esc"
         screen.blit(font.render(status, True, (255, 255, 255)), (6, side + 6))
+        screen.blit(font.render(keys, True, (255, 255, 255)), (6, side + 28))
         pygame.display.flip()
         clock.tick(30)
 
 
+def cells(text: str) -> tuple:
+    """"24,45 8,45" -> ((24, 45), (8, 45))."""
+    return tuple(tuple(int(v) for v in c.split(",")) for c in text.split())
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--sources", default=f"{SIZE // 2},{SIZE - 3}", help='cells, e.g. "8,45 24,45 40,45"')
+    parser.add_argument("--sinks", default=f"{SIZE // 2},2", help='cells, e.g. "12,2 36,2"')
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--dt", type=float, default=0.5)
-    parser.add_argument("--time", type=float, default=300000.0)
-    parser.add_argument("--sinks", type=int, choices=(1, 2), default=1)
-    parser.add_argument("--drains", default="1,1", help="the sinks' drain strengths, e.g. 2,1")
-    parser.add_argument("--move", nargs=3, metavar=("WHAT", "TIME", "ROW"),
-                        help="at TIME, the source (or the first sink) jumps to ROW of its edge, e.g. sink 300000 8")
-    parser.add_argument("--picture", help="save g's development as a PNG")
+    parser.add_argument("--dt", type=float, default=1.0)
+    parser.add_argument("--time", type=float, default=300.0)
+    parser.add_argument("--move", nargs=4, metavar=("WHAT", "TIME", "ROW", "COLUMN"),
+                        help="at TIME, the first source (or sink) jumps to (ROW, COLUMN), e.g. sink 150 6 24")
+    parser.add_argument("--picture", help="save p's development as a PNG")
     parser.add_argument("--watch", action="store_true", help="watch it live instead")
+    parser.add_argument("--title", default="paths", help="the live view's window title")
+    parser.add_argument("--clean", action="store_true", help="no jitter (cells still update at random times)")
     args = parser.parse_args()
-    ends = Ends(sinks=SINKS[args.sinks], drains=tuple(map(float, args.drains.split(","))))
+    if args.clean:
+        JITTER = 0.0
+    ends = Ends(sources=cells(args.sources), sinks=cells(args.sinks))
     if args.move:
-        what, time, row = args.move
-        column = (ends.source if what == "source" else ends.sinks[0])[1]
-        ends = replace(ends, move=(float(time), what, (int(row), column)))
+        what, time, row, column = args.move
+        ends = replace(ends, move=(float(time), what, (int(row), int(column))))
     if args.watch:
-        watch(args.seed, args.dt, ends)
+        watch(args.seed, args.dt, ends, title=args.title)
         raise SystemExit
-    g, c, now, pictures = grow(args.seed, args.dt, args.time, ends)
-    print(report(g, now))
+    p, now, pictures = grow(args.seed, args.dt, args.time, ends)
+    print(report(p, now))
     if args.picture:
         save_pictures(pictures, args.picture)

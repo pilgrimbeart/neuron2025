@@ -137,6 +137,14 @@ python paths.py --picture net.png --sources "8,45 24,45 40,45" --sinks "12,2 36,
 
 **Next:** quiet networks that stay in place once formed (plasticity: today a path exists only while waves keep coming); every source reaching every sink rather than only the nearest (a network with junctions); then carry pulses along the paths and put learning at the junctions.
 
+**Knowing where you are (`places.py`):** on a square sheet of identical cells, the four corners and the centre identify themselves by counting steps in from the edge (the centre is the highest count) and out from the centre (the corners are the highest), with whole-number counts to resist noise; or, more slowly, with one leaky chemical (highest at the centre, lowest at the corners).
+
+```bash
+python places.py --watch                 # or --rule leak; K marks the cells that say they are corners, C the centre
+```
+
+These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
+
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.
 
 **After that (some or all):**

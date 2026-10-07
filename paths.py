@@ -1,5 +1,5 @@
 """Growing wiring: can a bare sheet wire its sources to its sinks by itself? (README, "Next goal"; LESSONS.md,
-"Growing wiring". The earlier, slow flow rule is at git tag exp/paths-flow.)
+"Growing paths". The earlier, slow flow rule is at git tag exp/paths-flow.)
 
     python paths.py [--sources R,C ...] [--sinks R,C ...] [--seed N] [--dt X] [--time T] [--clean]
                     [--move source|sink TIME ROW COLUMN] [--picture FILE.png] [--watch [--title T]]

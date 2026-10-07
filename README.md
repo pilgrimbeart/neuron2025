@@ -6,7 +6,7 @@ The cell rule is **evolved**. It was first designed by hand: an excitable medium
 
 **The picture we're aiming for:** a big sheet, a few sensors and actuators wired to its edges, and the sheet left to run. It grows its own sparse network, with most cells completely inactive, either by starting dense and pruning to paths (as slime mould does), or by growing paths through a quiet medium along gradients and then pruning them by use (as nervous systems do). When something new has to be learned, the growth and pruning can start again where needed.
 
-- `LESSONS.md`: what we've learned with the evolved rule, and the principles carried over from the hand-designed one.
+- `LESSONS.md`: the principles, an index of capabilities, and what we've learned in each experiment, dead ends included.
 - `AGENTS.md`: how we work on the project.
 
 ## The cell (`cell.py`)
@@ -133,7 +133,7 @@ python paths.py --picture net.png --sources "8,45 24,45 40,45" --sinks "12,2 36,
 
 **Persistent, quiet wiring** (on by default): a sink calls only while hungry (no pulse has reached it lately), and a path lives as long as its sink thanks it (an acknowledgement passed back up the path for each pulse that arrives). Once wired, the sheet falls silent and the paths stay; damage, moved or removed ends make sinks hungry or sources lonely, and the network re-wires, then falls quiet again.
 
-**Crossing and learning (experiments in `LESSONS.md`, "Growing wiring"):** crossed wiring for approach works with one set of variables per thruster (all 12 inputs of a robot-like ring reach their opposite thruster), or with no crossing at all if thrusters pull towards their own side (one channel). One bit was learned on a grown path: pulses along it, a trace at each input, and a bad taste closing the gate of a recently active input; the poison colour stopped reaching the thruster after its first visit, the other carried on.
+**Crossing and learning (experiments in `LESSONS.md`, "Growing paths"):** crossed wiring for approach works with one set of variables per thruster (all 12 inputs of a robot-like ring reach their opposite thruster), or with no crossing at all if thrusters pull towards their own side (one channel). One bit was learned on a grown path: pulses along it, a trace at each input, and a bad taste closing the gate of a recently active input; the poison colour stopped reaching the thruster after its first visit, the other carried on.
 
 **Next:** quiet networks that stay in place once formed (plasticity: today a path exists only while waves keep coming); every source reaching every sink rather than only the nearest (a network with junctions); then carry pulses along the paths and put learning at the junctions.
 

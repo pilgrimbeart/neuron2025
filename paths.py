@@ -69,6 +69,7 @@ CALL = 150.0        # how long a sink keeps calling (sending waves) after a requ
 KEEP = 50.0         # a cell thanked within this long keeps its breadcrumb whatever waves pass (in use: leave it)
 HUNGER = 200.0      # a sink sends waves only after this long without receiving a pulse
 HALF_ON = 0.5       # a cell is path when p is above this
+KICK_SENDS = True   # an end kick sends a pulse down the path (False: pulses only when the world says, as a sensor)
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ def _seed(seed):
 def knobs() -> np.ndarray:
     """The rule's numbers, as `_ticks` takes them (read when a life starts)."""
     return np.array([RATE, HOLD_FADE, EXCITED, REFRACTORY, EXPIRE, FAR, UPDATE, JITTER, MARGIN,
-                     1.0 if PERSIST else 0.0, PULSE_TIME, PULSE_REST, HUNGER, CALL, KEEP])
+                     1.0 if PERSIST else 0.0, PULSE_TIME, PULSE_REST, HUNGER, CALL, KEEP, 1.0 if KICK_SENDS else 0.0])
 
 
 # The cells' numbers, one layer each: the wave (excited and refractory time left, the count it carried here), the
@@ -114,14 +115,15 @@ LAYERS = 22
 
 
 @njit(cache=True, parallel=True)
-def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
-    """ticks ticks. s holds the cells' numbers (the layers above), s2 is scratch, tag is each cell's name, and
-    is_source and is_sink mark the cells the world kicks. First every cell's clocks run and the ends get their kicks;
+def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, send, ticks, dt, k):
+    """ticks ticks. s holds the cells' numbers (the layers above), s2 is scratch, tag is each cell's name,
+    is_source and is_sink mark the cells the world kicks, and send marks sources the world makes send a pulse now. First every cell's clocks run and the ends get their kicks;
     then each cell, with chance UPDATE, updates from its own numbers and its neighbours' (see the module's
     description)."""
     rate, fade, excited, refractory, expire, far, update, jitter, margin = (
         k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8])
     persist, pulse_time, pulse_rest, hunger, call, keep = k[9] > 0.5, k[10], k[11], k[12], k[13], k[14]
+    kick_sends = k[15] > 0.5
     n = s.shape[1]
     root2 = np.sqrt(2.0)
     for _ in range(ticks):
@@ -157,11 +159,12 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
                         s[rest, y, x] = max(0.0, s[rest, y, x] - dt)
                 s[SOURCE, y, x] *= 1.0 - fade * dt                  # the ends' holds fade; kicks top them up
                 s[SINK, y, x] *= 1.0 - fade * dt
-                if is_source[y, x] and np.random.random() < rate * dt:
+                kicked = is_source[y, x] and np.random.random() < rate * dt
+                if (persist and (send[y, x] or (kicked and kick_sends)) and s[PATH, y, x] > 0.5
+                        and s[FIRE_LEFT, y, x] == 0.0 and s[FIRE_REST, y, x] == 0.0):
+                    s[FIRE_LEFT, y, x] = pulse_time                 # a source sends a pulse down the path
+                if kicked:
                     s[SOURCE, y, x] += 1.0
-                    if (persist and s[PATH, y, x] > 0.5 and s[FIRE_LEFT, y, x] == 0.0
-                            and s[FIRE_REST, y, x] == 0.0):             # a source kick sends a pulse down the path
-                        s[FIRE_LEFT, y, x] = pulse_time
                     if (persist and s[LONELY, y, x] > hunger and s[ASK_LEFT, y, x] == 0.0
                             and s[ASK_REST, y, x] == 0.0):              # a lonely source asks, with a request wave
                         s[ASK_LEFT, y, x] = excited
@@ -236,9 +239,8 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
         s[:, :, :] = s2
 
 
-def life(seed: int = 0, dt: float = 1.0, ends: Ends = Ends()):
-    """One life, without end: yields (time, path, the ends in place) after every tick (path is the same array,
-    changed in place). Sending it new Ends moves the ends."""
+def born(seed: int = 0):
+    """A new sheet: (the cells' numbers, scratch, each cell's tag, the knobs)."""
     rng = np.random.default_rng(seed)
     s = np.zeros((LAYERS, SIZE, SIZE))
     s[COUNT], s[AGE], s[CRUMB], s[VIA_CRUMB], s[BEST], s[BEST_CRUMB] = FAR, EXPIRE + 1.0, -1.0, FAR, FAR, -1.0
@@ -246,24 +248,28 @@ def life(seed: int = 0, dt: float = 1.0, ends: Ends = Ends()):
     s[LONELY] = 1e9                                 # sources are lonely from birth: they ask until first thanked,
                                                     # however long a big sheet makes the first round trip
     s[THANKED] = 1e9                                # nothing has been thanked
-    s2 = np.empty_like(s)
     tag = rng.random((SIZE, SIZE))                  # each cell's name, from birth: random, nothing about position
-    k = knobs()
     _seed(seed)
+    return s, np.empty_like(s), tag, knobs()
+
+
+def masks(cells) -> np.ndarray:
+    """A SIZE x SIZE mask, true at the given cells."""
+    m = np.zeros((SIZE, SIZE), np.bool_)
+    for cell in cells:
+        m[cell] = True
+    return m
+
+
+def life(seed: int = 0, dt: float = 1.0, ends: Ends = Ends()):
+    """One life, without end: yields (time, path, the ends in place) after every tick (path is the same array,
+    changed in place). Sending it new Ends moves the ends."""
+    s, s2, tag, k = born(seed)
+    quiet = masks(())
     step = 0
     while True:
         now = ends.at(step * dt)
-        is_source, is_sink = np.zeros((SIZE, SIZE), np.bool_), np.zeros((SIZE, SIZE), np.bool_)
-        for cell in now.sources:
-            is_source[cell] = True
-        for cell in now.sinks:
-            is_sink[cell] = True
-        is_cut, is_wall = np.zeros((SIZE, SIZE), np.bool_), np.zeros((SIZE, SIZE), np.bool_)
-        for cell in now.cuts:
-            is_cut[cell] = True
-        for cell in now.walls:
-            is_wall[cell] = True
-        _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, 1, dt, k)
+        _ticks(s, s2, tag, masks(now.sources), masks(now.sinks), masks(now.cuts), masks(now.walls), quiet, 1, dt, k)
         step += 1
         sent = yield step * dt, s[PATH], now
         if sent is not None:                        # new ends, sent in (the live view's keys)

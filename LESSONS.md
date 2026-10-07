@@ -26,7 +26,8 @@ What we tried, what worked, what didn't and why, so settled questions aren't reo
 | Knowing where you are | `places.py` | Count steps in from the edge (the centre is the highest), then out from the centre (the corners are the highest). | Works at 24–96. |
 | Growing paths | `paths.py` | Sinks send waves that count steps; each cell remembers which neighbour the wave came from; a path is the breadcrumb trail from a source; pulses and acknowledgements keep it, and the sheet falls silent. | Works at 48–384. |
 | Crossing paths | `~/neuron2025-parked/paths_experiments/cross/` | A breadcrumb channel per target (or change the body so the target is the nearest). | 100%; hub and addresses about 90%. |
-| One-bit learning | `~/neuron2025-parked/paths_experiments/learn.py` | A gate at each input, closed by a bad taste while that input's trace of recent pulses is up. | Works on a bare sheet. |
+| Learning which colour is poison | `learn.py` | Each input cell sends its pulses towards APPROACH with chance b, else AVOID; a taste moves b by rate × taste × the input's trace (three factors: just active, a meal, the taste). | Works at 49; 512 not yet checked. |
+| One-bit learning (first version) | `~/neuron2025-parked/paths_experiments/learn.py` | A gate at each input, closed by a bad taste while that input's trace of recent pulses is up. | Works on a bare sheet. |
 | Wiring drawn by hand | `old_manual_gates/` | An excitable medium on hand-drawn wiring: wires, diodes, AND/OR/XOR, crossings, oscillators; routing learned by reward. | Works; its own LESSONS. |
 | Evolved robot rule | `cell.py`, `evolve.py`, `mapelites.py` (tag `exp/robot-curriculum`) | A polynomial per cell variable, found by evolution through a curriculum. | Moves, approaches, grazes; colour learning never found. |
 
@@ -35,6 +36,15 @@ What we tried, what worked, what didn't and why, so settled questions aren't reo
 # Part 1: capability experiments
 
 "Can a uniform sheet do X?", one at a time: for each, find the simplest mechanism, test it against noise, random update times, tick size and size, and record the pros, cons and dead ends. Once enough capabilities work, compose them: the organism is designed as a sequence of developmental stages (lay down a coordinate system, grow paths between the places it defines, then learn on them), every cell running the same rule throughout and switching stage by local "this stage's work is done here" triggers, as embryos do with one genome; never durations, since a fixed wait hides an assumption about size.
+
+## Learning which colour is poison (`learn.py`)
+
+- **The set-up: one of each thing.** A red and a blue sensor's input cells by one edge, an APPROACH and an AVOID output by the other, wired by two breadcrumb channels (one per output, both inputs sources in each: four routes, crossing freely). The body and world: a block appears, red or blue at random; while in view its sensor kicks its input cell; the first output to receive 3 pulses wins; approach means eaten and, 10 later, tasted at both input cells (bad if poison). Next block a random while after the pulses in flight have arrived; nothing waits a time that depends on size.
+- **The rule, in the input cell (where the paths start and taste arrives).** Two numbers: a balance b (each pulse goes towards APPROACH with chance b, else AVOID) and a trace (1 when its sensor last kicked it, fading over 50). A taste moves b by 0.6 × taste × trace, scaled to stay between 0 and 1. Three factors: pre (the trace), post (a meal follows only approach, so the taste arriving is itself the sign approach won), and the taste. One number for "punish towards and reward away": lowering b does both. The learning lives at the input because routes from the two inputs merge further on.
+- **Result (49×49, 8 seeds × both poison colours, tick sizes 1 and 0.5, 30 blocks).** In the second half of lives poison was approached 7–8% of the time and food 99–100%; poison eaten 2.4 times per life (at most 4); final balance poison about 0.15, food 1.00. Without learning (rate 0): both colours about 55%, poison eaten 7.4–7.8 times. Learning takes one to three bad tastes.
+- **Crosstalk, the price of a time trace:** in 6 of 16 lives a poison taste also lowered the food colour's balance for a while (food had been seen just before), always recovered by later good tastes. Sending taste back along the path that drove the meal (like the acknowledgements) would credit only the inputs that actually drove it; untried.
+- **`paths.py` change:** an end kick no longer has to send a pulse (KICK_SENDS); the world can make a source send (a sensor). Paths now carry only signal, so an unused route is forgotten and re-grown on request (sinks and sources ask as before), rather than held by maintenance pulses.
+- **The input cell's rule is in `learn.py`, outside the path kernel** (one cell, two numbers); moving it into the shared cell rule comes with putting it all in the robot.
 
 ## Development in stages (`develop.py`)
 

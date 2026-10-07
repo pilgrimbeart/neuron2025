@@ -155,6 +155,13 @@ python frame.py --watch                  # r for a new seed (a new orientation);
 python develop.py --watch --size 97
 ```
 
+**Learning which colour is poison (`learn.py`):** a red and a blue sensor wired by grown paths to an APPROACH and an AVOID output; each input cell sends its pulses towards approach with chance b, and a taste moves b by rate × taste × that input's recent-activity trace (three-factor learning). Blocks of random colour, in random order: after one to three bad tastes the poison colour is avoided and food still eaten.
+
+```bash
+python learn.py --watch
+python learn.py --seed 1 --poison blue --blocks 30
+```
+
 These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.

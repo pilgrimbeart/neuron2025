@@ -50,7 +50,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 SIZE = 48
 RATE = 0.5          # end kicks per unit time
@@ -58,12 +58,12 @@ HOLD_FADE = 0.05    # how fast an end cell's hold fades per unit time (kicks top
 EXCITED = 16.0      # how long a cell stays excited when a wave passes
 REFRACTORY = 40.0   # how long it is then refractory (longer than EXCITED, so a wave can't turn back)
 EXPIRE = 200.0      # how long a cell keeps its breadcrumb without a wave (more than a wave period)
-FAR = 1000.0        # no count known
+FAR = 1e9           # no count known (in effect infinite: a count may be as long as the sheet is big)
 UPDATE = 0.5        # the chance that a cell updates in a tick (never all at once)
 JITTER = 0.01       # random jitter in each count a wave carries
 MARGIN = 0.1        # how much longer (a fraction) the way through its breadcrumb may be before a cell switches
 PERSIST = True      # pulses along paths, acknowledgements back, and sinks that send waves only when hungry
-PULSE_TIME = 8.0    # how long a cell passes a pulse (or an acknowledgement) on: long enough for random updates
+PULSE_TIME = 16.0   # how long a cell passes a pulse (or an acknowledgement) on: long enough for random updates
 PULSE_REST = 2.0   # how long it then rests from passing another
 CALL = 150.0        # how long a sink keeps calling (sending waves) after a request reaches it, fed or not
 KEEP = 50.0         # a cell thanked within this long keeps its breadcrumb whatever waves pass (in use: leave it)
@@ -113,7 +113,7 @@ def knobs() -> np.ndarray:
 LAYERS = 22
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
     """ticks ticks. s holds the cells' numbers (the layers above), s2 is scratch, tag is each cell's name, and
     is_source and is_sink mark the cells the world kicks. First every cell's clocks run and the ends get their kicks;
@@ -125,7 +125,7 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
     n = s.shape[1]
     root2 = np.sqrt(2.0)
     for _ in range(ticks):
-        for y in range(n):
+        for y in prange(n):                             # rows in parallel (each cell reads the old state)
             for x in range(n):
                 s[AGE, y, x] += dt
                 if s[EXCITED_LEFT, y, x] > 0.0:
@@ -173,7 +173,7 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, ticks, dt, k):
                         s[EXCITED_LEFT, y, x], s[COUNT, y, x], s[AGE, y, x] = excited, 0.0, 0.0
                         s[CRUMB, y, x], s[VIA_CRUMB, y, x], s[BEST, y, x], s[BEST_CRUMB, y, x] = -1.0, 0.0, far, -1.0
         s2[:, :, :] = s
-        for y in range(n):
+        for y in prange(n):                             # rows in parallel (each cell reads the old state)
             for x in range(n):
                 if np.random.random() >= update:
                     continue
@@ -243,7 +243,8 @@ def life(seed: int = 0, dt: float = 1.0, ends: Ends = Ends()):
     s = np.zeros((LAYERS, SIZE, SIZE))
     s[COUNT], s[AGE], s[CRUMB], s[VIA_CRUMB], s[BEST], s[BEST_CRUMB] = FAR, EXPIRE + 1.0, -1.0, FAR, FAR, -1.0
     s[FED] = 1e9                                    # sinks are born hungry
-    s[LONELY] = 0.0                                 # sources are not yet lonely
+    s[LONELY] = 1e9                                 # sources are lonely from birth: they ask until first thanked,
+                                                    # however long a big sheet makes the first round trip
     s[THANKED] = 1e9                                # nothing has been thanked
     s2 = np.empty_like(s)
     tag = rng.random((SIZE, SIZE))                  # each cell's name, from birth: random, nothing about position

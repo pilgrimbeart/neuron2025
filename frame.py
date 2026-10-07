@@ -7,8 +7,12 @@ coordinates (here the middle of the north edge, and the point halfway from the c
 In sequence, each step simple:
   1. Corners know they are corners: they have only three neighbours.
   2. Election: every cell holds the smallest corner tag it has heard (each cell is born with a random tag, as a
-     name). The corner whose own tag survives is the origin, x = y = 0. It waits SETTLE before acting, so that early
-     false winners (each corner believes it wins until a smaller tag arrives) never act. No ties, one crossing.
+     name). The corner whose own tag survives is the origin, x = y = 0. No ties, one crossing. Every corner believes
+     it wins until a smaller tag reaches it, and acts on that at once; so everything a cell builds on the election
+     (its sign and its counts) is keyed by the winner it believed in, the smallest tag it had heard. A cell uses a
+     neighbour's sign or count only if made under the same key as its own belief, and when a smaller tag reaches it,
+     it drops its own and starts again: a false origin's work is discarded as news of the true winner spreads, with
+     no waiting, so it works at any size.
   3. The origin chooses the axes itself: of its two neighbours along the edges, the one with the smaller tag starts a
      sign +1 and the other -1. Signs run along the edge cells (no counting; an edge cell keeps the first it gets).
      The corner +1 reaches is x = 1, y = 0, and relays +2 along its other edge; the corner +2 reaches is x = y = 1;
@@ -25,8 +29,8 @@ In sequence, each step simple:
      starting noise, or from counts that came from only part of an edge: thousands of false claims on a big sheet.)
 
 Every cell updates at random times (each tick with chance UPDATE), and its x and y get random jitter (JITTER; --clean
-turns it off). A cell's numbers: the smallest tag heard, how long it has been the winner (corners), its sign (edges and
-corners), and x and y.
+turns it off). A cell's numbers: the smallest tag heard, the key its sign and counts were made under, its sign (edges
+and corners), its four counts, and x and y (worked out from the counts).
 """
 
 from __future__ import annotations
@@ -40,17 +44,16 @@ from numba import njit, prange
 SIZE = 49
 UPDATE = 0.5        # the chance that a cell updates in a tick
 JITTER = 0.001      # random jitter in x and y at each update
-SETTLE = 300.0      # how long a corner must have been the winner before it acts as the origin
 RULE = "waves"      # waves: counts in from each edge, coordinates as fractions; average: neighbours' average
 RELAX = 1.0         # how far towards (or past) its neighbours' average a cell moves its x and y per update
 NOISE = 0.1         # cells start with x and y uniform in 0..NOISE
 TIE = 1e-4          # how much nearer a neighbour must be to a place before a cell gives up its name
 PLACES = {"N": (0.5, 1.0), "H": (0.75, 0.75)}   # named places, as true fractions of the body: north middle, NE halfway
 
-# The cells' numbers (MIN: smallest corner tag heard; LEAD: time a corner has been the winner; SIGN: 0 none, +1, -1,
+# The cells' numbers (MIN: smallest corner tag heard; KEY: the winner its sign and counts were made under; SIGN: 0 none, +1, -1,
 # +2; X, Y) and what each cell has decided (CORNER: 0 none, 1 origin, 2 (1,0), 3 (0,1), 4 (1,1); NAME: 0 none, else the
 # place's number).
-MIN, LEAD, SIGN, CORNER, X, Y, NAME, D_S, D_W, D_E, D_N = range(11)   # D_*: counts in from each edge (waves)
+MIN, KEY, SIGN, CORNER, X, Y, NAME, D_S, D_W, D_E, D_N = range(11)   # D_*: counts in from each edge (waves)
 LAYERS = 11
 FAR = 1e6
 CORNER_XY = ((-1.0, -1.0), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0))
@@ -74,15 +77,9 @@ def _neighbours(n, y, x):
 
 @njit(cache=True, parallel=True)
 def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
-    update, jitter, settle, relax, tie, waves = k[0], k[1], k[2], k[3], k[4], k[5] > 0.5
+    update, jitter, relax, tie, waves = k[0], k[1], k[3], k[4], k[5] > 0.5
     n = s.shape[1]
     for _ in range(ticks):
-        for y in prange(n):                                 # the corners' clocks: time as the winner
-            for x in range(n):
-                if kind[y, x] == 3 and s[MIN, y, x] == tag[y, x]:
-                    s[LEAD, y, x] += dt
-                else:
-                    s[LEAD, y, x] = 0.0
         s2[:, :, :] = s
         for y in prange(n):                                 # rows in parallel: each cell reads only the old state
             for x in range(n):
@@ -90,6 +87,16 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                     continue
                 corner, edge = kind[y, x] == 3, kind[y, x] == 5
                 least = tag[y, x] if corner else 2.0         # the election: the smallest corner tag heard
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        yy, xx = y + dy, x + dx
+                        if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
+                            least = min(least, s[MIN, yy, xx])
+                s2[MIN, y, x] = least
+                if s[KEY, y, x] != least:                    # a new winner believed in: start again under it
+                    s2[KEY, y, x], s2[SIGN, y, x], s2[CORNER, y, x] = least, 0.0, 0.0
+                    for e in range(4):
+                        s2[D_S + e, y, x] = FAR
                 total_x = total_y = 0.0
                 seen = np.zeros(5)                          # signs seen on orthogonal edge or corner neighbours:
                 least_d = np.full(4, FAR)                   # +1, -1, +2, -2 (index 1..4); smallest counts (waves)
@@ -98,9 +105,10 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                         yy, xx = y + dy, x + dx
                         if not ((dy or dx) and 0 <= yy < n and 0 <= xx < n):
                             continue
-                        least = min(least, s[MIN, yy, xx])
                         total_x += s[X, yy, xx]
                         total_y += s[Y, yy, xx]
+                        if s[KEY, yy, xx] != least:         # made under another winner: not to be used
+                            continue
                         for e in range(4):                  # whole-number counts, as in places.py
                             least_d[e] = min(least_d[e], np.round(s[D_S + e, yy, xx]) + 1.0)
                         if (dy == 0 or dx == 0) and kind[yy, xx] != 8:
@@ -113,8 +121,8 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                                 seen[3] = 1.0
                             elif sg == -2.0:
                                 seen[4] = 1.0
-                            # beside the settled origin: of its two edge neighbours (diagonal to each other), the one
-                            # with the smaller tag takes +1
+                            # beside the origin: of its two edge neighbours (diagonal to each other), the one with the
+                            # smaller tag takes +1
                             if (edge and s2[SIGN, y, x] == 0.0 and s[CORNER, yy, xx] == 1.0):
                                 for ey in range(-1, 2):
                                     for ex in range(-1, 2):
@@ -122,7 +130,6 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                                         if ey and ex and 0 <= oy < n and 0 <= ox < n and kind[oy, ox] == 5 \
                                                 and abs(oy - yy) + abs(ox - xx) == 1:
                                             s2[SIGN, y, x] = 1.0 if tag[y, x] < tag[oy, ox] else -1.0
-                s2[MIN, y, x] = least
                 if edge and s2[SIGN, y, x] == 0.0:           # signs run along the edges: keep the first one got
                     if seen[1] > 0.0:
                         s2[SIGN, y, x] = 1.0
@@ -133,8 +140,8 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                     elif seen[4] > 0.0:
                         s2[SIGN, y, x] = -2.0
                 if corner:                                   # what this corner is
-                    if s[MIN, y, x] == tag[y, x] and s[LEAD, y, x] > settle:
-                        s2[CORNER, y, x] = 1.0              # the origin
+                    if least == tag[y, x]:
+                        s2[CORNER, y, x] = 1.0              # the origin (as far as it knows)
                     elif seen[1] > 0.0:
                         s2[CORNER, y, x], s2[SIGN, y, x] = 2.0, 2.0     # x = 1, y = 0: relays +2
                     elif seen[2] > 0.0:
@@ -171,7 +178,8 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                         for dx in range(-1, 2):
                             yy, xx = y + dy, x + dx
                             if knows and (dy or dx) and 0 <= yy < n and 0 <= xx < n:
-                                knows = (np.round(s[D_W, yy, xx]) + np.round(s[D_E, yy, xx]) == across
+                                knows = (s[KEY, yy, xx] == least and s[KEY, y, x] == least
+                                         and np.round(s[D_W, yy, xx]) + np.round(s[D_E, yy, xx]) == across
                                          and np.round(s[D_S, yy, xx]) + np.round(s[D_N, yy, xx]) == down)
                 for p in range(targets.shape[0] if knows else 0):
                     mine = abs(s[X, y, x] - targets[p, 0]) + abs(s[Y, y, x] - targets[p, 1])
@@ -236,7 +244,7 @@ def places(n: int = None):
 
 
 def knobs():
-    return np.array([UPDATE, JITTER, SETTLE, RELAX, TIE, 1.0 if RULE == "waves" else 0.0])
+    return np.array([UPDATE, JITTER, 0.0, RELAX, TIE, 1.0 if RULE == "waves" else 0.0])
 
 
 def life(seed: int = 0, dt: float = 1.0):
@@ -391,12 +399,11 @@ if __name__ == "__main__":
     parser.add_argument("--time", type=float, default=20000.0)
     parser.add_argument("--rule", choices=("waves", "average"), default=RULE)
     parser.add_argument("--relax", type=float, default=RELAX)
-    parser.add_argument("--settle", type=float, default=SETTLE, help="how long the origin waits (more than a crossing)")
     parser.add_argument("--clean", action="store_true", help="no jitter")
     parser.add_argument("--picture", help="save the development as a PNG")
     parser.add_argument("--watch", action="store_true", help="watch it live instead")
     args = parser.parse_args()
-    SIZE, RELAX, RULE, SETTLE = args.size, args.relax, args.rule, args.settle
+    SIZE, RELAX, RULE = args.size, args.relax, args.rule
     if args.clean:
         JITTER = 0.0
     if args.watch:

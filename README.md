@@ -149,6 +149,12 @@ python places.py --watch                 # or --rule leak; K marks the cells tha
 python frame.py --watch                  # r for a new seed (a new orientation); --rule average for the slow, warped version
 ```
 
+**Development in stages (`develop.py`):** the frame is laid down, then three points appear (an equilateral triangle about the centre), then paths grow between them, all by local rules, with no timers between stages: each stage starts when the one before has produced what it needs.
+
+```bash
+python develop.py --watch --size 97
+```
+
 These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.

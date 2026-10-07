@@ -19,8 +19,10 @@ In sequence, each step simple:
      warped coordinates. RELAX above 1 over-relaxes (each update overshoots the average a little), which settles far
      faster.
   5. Naming a place: once a cell knows its coordinates, it takes a name if its (x, y) is nearer the place's
-     coordinates than any neighbour's (before then, its x and y are only its starting noise, and in that, hundreds of
-     cells would happen to be locally nearest).
+     coordinates than any neighbour's. A cell knows its coordinates when its counts from opposite edges add up to the
+     same as each neighbour's: in a finished frame those sums are the same everywhere (the width and the height), and
+     while the edges are still being labelled they aren't. (Without that check, cells name themselves from their
+     starting noise, or from counts that came from only part of an edge: thousands of false claims on a big sheet.)
 
 Every cell updates at random times (each tick with chance UPDATE), and its x and y get random jitter (JITTER; --clean
 turns it off). A cell's numbers: the smallest tag heard, how long it has been the winner (corners), its sign (edges and
@@ -30,9 +32,10 @@ corners), and x and y.
 from __future__ import annotations
 
 import argparse
+import time
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 SIZE = 49
 UPDATE = 0.5        # the chance that a cell updates in a tick
@@ -69,19 +72,19 @@ def _neighbours(n, y, x):
     return k
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
     update, jitter, settle, relax, tie, waves = k[0], k[1], k[2], k[3], k[4], k[5] > 0.5
     n = s.shape[1]
     for _ in range(ticks):
-        for y in range(n):                                  # the corners' clocks: time as the winner
+        for y in prange(n):                                 # the corners' clocks: time as the winner
             for x in range(n):
                 if kind[y, x] == 3 and s[MIN, y, x] == tag[y, x]:
                     s[LEAD, y, x] += dt
                 else:
                     s[LEAD, y, x] = 0.0
         s2[:, :, :] = s
-        for y in range(n):
+        for y in prange(n):                                 # rows in parallel: each cell reads only the old state
             for x in range(n):
                 if np.random.random() >= update:
                     continue
@@ -157,7 +160,19 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                     s2[Y, y, x] = s[Y, y, x] + relax * (total_y / m - s[Y, y, x]) + jitter * np.random.standard_normal()
                 # naming: nearer a place's coordinates than any neighbour, once this cell knows its coordinates
                 name = 0.0
-                knows = (not waves) or (s[D_W, y, x] + s[D_E, y, x] < FAR / 2 and s[D_S, y, x] + s[D_N, y, x] < FAR / 2)
+                # a cell knows its coordinates when its counts from opposite edges add up to the same as its
+                # neighbours' (in a finished frame the sums are the same everywhere: the width and the height)
+                knows = True
+                if waves:
+                    across = np.round(s[D_W, y, x]) + np.round(s[D_E, y, x])
+                    down = np.round(s[D_S, y, x]) + np.round(s[D_N, y, x])
+                    knows = across < FAR / 2 and down < FAR / 2
+                    for dy in range(-1, 2):
+                        for dx in range(-1, 2):
+                            yy, xx = y + dy, x + dx
+                            if knows and (dy or dx) and 0 <= yy < n and 0 <= xx < n:
+                                knows = (np.round(s[D_W, yy, xx]) + np.round(s[D_E, yy, xx]) == across
+                                         and np.round(s[D_S, yy, xx]) + np.round(s[D_N, yy, xx]) == down)
                 for p in range(targets.shape[0] if knows else 0):
                     mine = abs(s[X, y, x] - targets[p, 0]) + abs(s[Y, y, x] - targets[p, 1])
                     nearest = True
@@ -308,7 +323,7 @@ def save_picture(pictures, path: str, scale: int = 4) -> None:
     pygame.image.save(pygame.surfarray.make_surface(np.stack([grey.T] * 3, axis=-1)), path)
 
 
-def watch(seed: int = 0, dt: float = 1.0, scale: int = 13, title: str = "frame") -> None:
+def watch(seed: int = 0, dt: float = 1.0, scale: int = 0, title: str = "frame") -> None:
     """A life, live: the warped coordinate grid as a checkerboard of bands (eighths of x and y), the corners lettered
     with their coordinates, and the cells that name themselves white and lettered (N north middle, H NE halfway).
     Keys: r restarts with a new seed; space pauses; up and down arrows change how many ticks pass per frame; Escape
@@ -316,11 +331,12 @@ def watch(seed: int = 0, dt: float = 1.0, scale: int = 13, title: str = "frame")
     import pygame
     pygame.init()
     n = SIZE
+    scale = scale or max(1, 640 // n)
     side = n * scale
     screen = pygame.display.set_mode((side, side + 50))
     pygame.display.set_caption(title)
     font = pygame.font.SysFont(None, 20)
-    ticks_per_frame, paused = 4, False
+    ticks_per_frame, paused = max(4, n // 32), False
     clock = pygame.time.Clock()
     lives = life(seed, dt)
     names = list(PLACES)
@@ -342,8 +358,12 @@ def watch(seed: int = 0, dt: float = 1.0, scale: int = 13, title: str = "frame")
         if paused:
             clock.tick(30)
             continue
-        for _ in range(ticks_per_frame):
+        started = time.time()                       # as many ticks as fit in a fifth of a second, so it never stalls
+        done = 0
+        while done < ticks_per_frame and (done == 0 or time.time() - started < 0.2):
             t, s, tag = next(lives)
+            done += 1
+        rate = done / max(time.time() - started, 1e-6)
         grey = (255 * picture(s, tag)).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
         screen.fill((0, 0, 0))
         screen.blit(pygame.surfarray.make_surface(np.stack([grey] * 3, axis=-1)), (0, 0))
@@ -352,10 +372,10 @@ def watch(seed: int = 0, dt: float = 1.0, scale: int = 13, title: str = "frame")
             if xy[0] >= 0:
                 label = font.render(f"{int(xy[0])}{int(xy[1])}", True, (255, 255, 255), (60, 60, 60))
                 screen.blit(label, (min(c[1] * scale, side - 18), min(c[0] * scale, side - 14)))
-        for r, c in np.argwhere(s[NAME] > 0):
+        for r, c in np.argwhere(s[NAME] > 0)[:20]:                  # (only a few letters: drawing is slow)
             screen.blit(font.render(names[int(s[NAME][r, c]) - 1], True, (0, 0, 0)), (c * scale + 2, r * scale))
         ok, detail = judge(s, tag)
-        status = f"seed {seed}   time {t:7.0f}   {'right' if ok else 'not yet'}   {detail}   {ticks_per_frame} ticks/frame"
+        status = f"seed {seed}   time {t:7.0f}   {'right' if ok else 'not yet'}   {detail}   {rate:5.0f} ticks/s (up to {ticks_per_frame}/frame)"
         screen.blit(font.render(status, True, (255, 255, 255)), (6, side + 6))
         screen.blit(font.render("r new seed   space pause   up/down speed   Esc quit", True, (255, 255, 255)),
                     (6, side + 28))
@@ -371,11 +391,12 @@ if __name__ == "__main__":
     parser.add_argument("--time", type=float, default=20000.0)
     parser.add_argument("--rule", choices=("waves", "average"), default=RULE)
     parser.add_argument("--relax", type=float, default=RELAX)
+    parser.add_argument("--settle", type=float, default=SETTLE, help="how long the origin waits (more than a crossing)")
     parser.add_argument("--clean", action="store_true", help="no jitter")
     parser.add_argument("--picture", help="save the development as a PNG")
     parser.add_argument("--watch", action="store_true", help="watch it live instead")
     args = parser.parse_args()
-    SIZE, RELAX, RULE = args.size, args.relax, args.rule
+    SIZE, RELAX, RULE, SETTLE = args.size, args.relax, args.rule, args.settle
     if args.clean:
         JITTER = 0.0
     if args.watch:

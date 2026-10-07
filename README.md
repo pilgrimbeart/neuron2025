@@ -160,6 +160,7 @@ python develop.py --watch --size 97
 ```bash
 python learn.py --watch
 python learn.py --seed 1 --poison blue --blocks 30
+python learn.py --world line --watch     # continuous movement on a line, both colours in view
 ```
 
 These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.

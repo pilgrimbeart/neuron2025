@@ -143,6 +143,12 @@ python paths.py --picture net.png --sources "8,45 24,45 40,45" --sinks "12,2 36,
 python places.py --watch                 # or --rule leak; K marks the cells that say they are corners, C the centre
 ```
 
+**A body frame (`frame.py`):** every cell comes to hold coordinates x and y from 0 to 1, and places name themselves by them (the north middle, the point halfway to the north-east corner). The corners elect an origin (smallest random tag wins), the origin chooses the axes (signs sent along the edges label all four), and each coordinate is a fraction: count in from the west edge / (counts from the west and east edges). The symmetry is broken by chance, fairly.
+
+```bash
+python frame.py --watch                  # r for a new seed (a new orientation); --rule average for the slow, warped version
+```
+
 These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.

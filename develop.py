@@ -36,7 +36,6 @@ def life(seed: int = 0):
     """One life, without end: yields (time, the frame's numbers, the three channels' path maps, the named cells for
     each point) after every tick."""
     frame.SIZE = paths.SIZE = SIZE
-    frame.RULE = "waves"
     frame.PLACES = POINTS
     body = frame.life(seed)
     channels = [paths.life(seed + 17 * (k + 1), 1.0, paths.Ends(sources=(), sinks=())) for k in range(3)]

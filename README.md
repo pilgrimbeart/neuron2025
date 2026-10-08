@@ -163,6 +163,13 @@ python learn.py --seed 1 --poison blue --blocks 30
 python learn.py --world line --watch     # continuous movement on a line, both colours in view
 ```
 
+**A new-born creature (`creature.py`):** a square brain of identical cells assembles itself (finds where it is and names its organs, grows wiring from its two colour sensors to its two thrusters), then the creature starts to move, and learns, from its own meals, which colour is food. Run-and-tumble: A at the tail drives it forward at what it sees, V at the front corner backs and turns it.
+
+```bash
+python creature.py --watch                      # the whole story, live, in about two minutes
+python creature.py --seed 1 --poison blue       # headless: when each stage began, meals in each third of life
+```
+
 These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
 
 **Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.

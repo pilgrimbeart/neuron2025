@@ -112,10 +112,16 @@ def knobs() -> np.ndarray:
 (EXCITED_LEFT, RESTING_LEFT, COUNT, CRUMB, VIA_CRUMB, BEST, BEST_CRUMB, AGE, SOURCE, SINK, PATH,
  FIRE_LEFT, FIRE_REST, ACK_LEFT, ACK_REST, FED, ARRIVED, ASK_LEFT, ASK_REST, LONELY, CALLING, THANKED) = range(22)
 LAYERS = 22
+# What a cell shows its neighbours (all they can read of it, besides its tag): five numbers. Its count while it is in
+# a wave (else -1), its breadcrumb while it is on the path (else -1), and whether it is passing a pulse, a request, or
+# thanks. (Merging those signals too fails: a request or a wave hidden in a cell busy with the other breaks its
+# front, and broken fronts in an excitable medium curl into spiral waves that never stop; thanks hidden behind waves
+# go missing on a big sheet, and it never falls quiet.)
 
 
 @njit(cache=True, parallel=True)
 def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, send, ticks, dt, k):
+    shown = np.empty((5, s.shape[1], s.shape[2]))
     """ticks ticks. s holds the cells' numbers (the layers above), s2 is scratch, tag is each cell's name,
     is_source and is_sink mark the cells the world kicks, and send marks sources the world makes send a pulse now. First every cell's clocks run and the ends get their kicks;
     then each cell, with chance UPDATE, updates from its own numbers and its neighbours' (see the module's
@@ -176,6 +182,13 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, send, ticks, dt, k):
                         s[EXCITED_LEFT, y, x], s[COUNT, y, x], s[AGE, y, x] = excited, 0.0, 0.0
                         s[CRUMB, y, x], s[VIA_CRUMB, y, x], s[BEST, y, x], s[BEST_CRUMB, y, x] = -1.0, 0.0, far, -1.0
         s2[:, :, :] = s
+        for y in prange(n):                             # what each cell shows its neighbours: three numbers
+            for x in range(n):
+                shown[0, y, x] = s[COUNT, y, x] if s[EXCITED_LEFT, y, x] > 0.0 else -1.0  # its count, if in a wave
+                shown[1, y, x] = s[CRUMB, y, x] if s[PATH, y, x] > 0.5 else -1.0    # its breadcrumb, if on path
+                shown[2, y, x] = 1.0 if s[FIRE_LEFT, y, x] > 0.0 else 0.0           # passing a pulse
+                shown[3, y, x] = 1.0 if s[ASK_LEFT, y, x] > 0.0 else 0.0            # passing on a request
+                shown[4, y, x] = 1.0 if s[ACK_LEFT, y, x] > 0.0 else 0.0            # passing back thanks
         for y in prange(n):                             # rows in parallel (each cell reads the old state)
             for x in range(n):
                 if np.random.random() >= update:
@@ -191,19 +204,20 @@ def _ticks(s, s2, tag, is_source, is_sink, is_cut, is_wall, send, ticks, dt, k):
                         yy, xx = y + dy, x + dx
                         if not ((dy or dx) and 0 <= yy < n and 0 <= xx < n):
                             continue
-                        if s[EXCITED_LEFT, yy, xx] > 0.0:
-                            v = s[COUNT, yy, xx] + (root2 if dy and dx else 1.0)
+                        m = shown[0, yy, xx]
+                        if m >= 0.0:                        # in a wave
+                            v = m + (root2 if dy and dx else 1.0)
                             if v < best:
                                 best, best_crumb = v, tag[yy, xx]
-                            if tag[yy, xx] == s[CRUMB, y, x] and s[COUNT, yy, xx] < s[COUNT, y, x]:
+                            if tag[yy, xx] == s[CRUMB, y, x] and m < s[COUNT, y, x]:
                                 via_crumb = v
-                        if s[PATH, yy, xx] > 0.5 and s[CRUMB, yy, xx] == tag[y, x]:
+                        if shown[1, yy, xx] == tag[y, x]:   # a path cell whose breadcrumb names me
                             named = True
-                            if s[FIRE_LEFT, yy, xx] > 0.0:
+                            if shown[2, yy, xx] > 0.5:
                                 fired_at = True
-                        if tag[yy, xx] == s[CRUMB, y, x] and s[ACK_LEFT, yy, xx] > 0.0:
+                        if tag[yy, xx] == s[CRUMB, y, x] and shown[4, yy, xx] > 0.5:
                             acked = True
-                        if s[ASK_LEFT, yy, xx] > 0.0:
+                        if shown[3, yy, xx] > 0.5:
                             asked = True
                 if s[EXCITED_LEFT, y, x] > 0.0:             # excited: take a smaller count, and watch the ways
                     if best < s[COUNT, y, x] and s[COUNT, y, x] > 0.0:

@@ -1,36 +1,34 @@
 """A body frame: on a square sheet of identical cells (all starting the same, bar noise), every cell comes to hold two
-coordinates, x and y from 0 to 1, with no global knowledge; then cells name themselves as particular places by those
-coordinates (here the middle of the north edge, and the point halfway from the centre to the north-east corner).
+coordinates, x and y from 0 to 1, with no global knowledge; then cells name themselves as particular places by them
+(here the middle of the north edge, and the point halfway from the centre to the north-east corner).
 
-    python frame.py [--size N] [--seed N] [--dt X] [--time T] [--relax W] [--clean] [--picture FILE.png] [--watch]
+    python frame.py [--size N] [--seed N] [--dt X] [--time T] [--clean] [--picture FILE.png] [--watch]
 
-In sequence, each step simple:
+A cell shares five numbers with its neighbours: the smallest corner tag it has heard, and four whole-number counts,
+in from the south, west, east and north edges. Everything else it keeps to itself (x, y and its name, worked out from
+its own counts). In sequence, each step simple:
   1. Corners know they are corners: they have only three neighbours.
   2. Election: every cell holds the smallest corner tag it has heard (each cell is born with a random tag, as a
-     name). The corner whose own tag survives is the origin, x = y = 0. No ties, one crossing. Every corner believes
-     it wins until a smaller tag reaches it, and acts on that at once; so everything a cell builds on the election
-     (its sign and its counts) is keyed by the winner it believed in, the smallest tag it had heard. A cell uses a
-     neighbour's sign or count only if made under the same key as its own belief, and when a smaller tag reaches it,
-     it drops its own and starts again: a false origin's work is discarded as news of the true winner spreads, with
-     no waiting, so it works at any size.
-  3. The origin chooses the axes itself: of its two neighbours along the edges, the one with the smaller tag starts a
-     sign +1 and the other -1. Signs run along the edge cells (no counting; an edge cell keeps the first it gets).
-     The corner +1 reaches is x = 1, y = 0, and relays +2 along its other edge; the corner +2 reaches is x = y = 1;
-     the corner -1 reaches is x = 0, y = 1. No corner ever sees a mixture of signs, so there is no race.
-  4. Coordinates: labelled corners hold their 0s and 1s, and every other cell averages its neighbours' x and y (the
-     steady state of diffusion). With only the corners held, the coordinates are warped (most of the sheet sits near
-     0.5, and they change steeply near the corners), but they are smooth and unique, and a place is named by its
-     warped coordinates. RELAX above 1 over-relaxes (each update overshoots the average a little), which settles far
-     faster.
-  5. Naming a place: once a cell knows its coordinates, it takes a name if its (x, y) is nearer the place's
-     coordinates than any neighbour's. A cell knows its coordinates when its counts from opposite edges add up to the
-     same as each neighbour's: in a finished frame those sums are the same everywhere (the width and the height), and
-     while the edges are still being labelled they aren't. (Without that check, cells name themselves from their
-     starting noise, or from counts that came from only part of an edge: thousands of false claims on a big sheet.)
-
-Every cell updates at random times (each tick with chance UPDATE), and its x and y get random jitter (JITTER; --clean
-turns it off). A cell's numbers: the smallest tag heard, the key its sign and counts were made under, its sign (edges
-and corners), its four counts, and x and y (worked out from the counts).
+     name). The corner whose own tag survives is the origin, x = y = 0. Every corner believes it wins until a smaller
+     tag reaches it, and acts on that at once; so a cell's counts are kept only while the smallest tag it has heard
+     stays the same (when a smaller one arrives it drops them and starts again), and it uses a neighbour's counts
+     only if that neighbour has heard the same smallest tag. A false origin's work is discarded as the news of the
+     true winner spreads, with no waiting, so it works at any size.
+  3. Edges are labelled by zeros in the counts: a cell on the south edge holds 0 as its count from the south, and so
+     on. The origin holds 0 from the south and the west. Of its two neighbours along the edges, the one with the
+     smaller tag holds 0 from the south, the other 0 from the west. An edge cell takes the zero of an edge neighbour
+     (not a corner) along the edge. A corner reached by a zero from the south is (1, 0), and also holds 0 from the
+     east; one reached from the west is (0, 1), and holds 0 from the north; one reached from the east or the north
+     is (1, 1), and holds both. The edge cell next to a corner takes the zero the corner holds that its other edge
+     neighbour (diagonal to it) lacks, if it has no zero yet: the corner's new edge. Whole numbers make the zeros robust
+     to noise.
+  4. Counts: every other count is the smallest neighbour's (with the same smallest tag) plus one: rows or columns in
+     from that edge. Coordinates are fractions: x = from west / (from west + from east), y likewise.
+  5. Naming a place: a cell knows its coordinates when its counts from opposite edges add up to the same as each
+     neighbour's (in a finished frame the sums are the same everywhere: the width and the height); it then takes a
+     name if its (x, y) is nearer the place's than any neighbour's.
+Every cell updates at random times (each tick with chance UPDATE), and its counts get random jitter (JITTER; --clean
+turns it off).
 """
 
 from __future__ import annotations
@@ -43,20 +41,16 @@ from numba import njit, prange
 
 SIZE = 49
 UPDATE = 0.5        # the chance that a cell updates in a tick
-JITTER = 0.001      # random jitter in x and y at each update
-RULE = "waves"      # waves: counts in from each edge, coordinates as fractions; average: neighbours' average
-RELAX = 1.0         # how far towards (or past) its neighbours' average a cell moves its x and y per update
-NOISE = 0.1         # cells start with x and y uniform in 0..NOISE
+JITTER = 0.001      # random jitter in the counts at each update
 TIE = 1e-4          # how much nearer a neighbour must be to a place before a cell gives up its name
-PLACES = {"N": (0.5, 1.0), "H": (0.75, 0.75)}   # named places, as true fractions of the body: north middle, NE halfway
+PLACES = {"N": (0.5, 1.0), "H": (0.75, 0.75)}   # named places, as fractions of the body: north middle, NE halfway
 
-# The cells' numbers (MIN: smallest corner tag heard; KEY: the winner its sign and counts were made under; SIGN: 0 none, +1, -1,
-# +2; X, Y) and what each cell has decided (CORNER: 0 none, 1 origin, 2 (1,0), 3 (0,1), 4 (1,1); NAME: 0 none, else the
-# place's number).
-MIN, KEY, SIGN, CORNER, X, Y, NAME, D_S, D_W, D_E, D_N = range(11)   # D_*: counts in from each edge (waves)
-LAYERS = 11
+# Shared with neighbours: MIN (the smallest corner tag heard) and the counts in from each edge (D_S, D_W, D_E, D_N).
+# Kept to itself: X, Y (from its counts) and NAME (0 none, else the place's number).
+MIN, D_S, D_W, D_E, D_N, X, Y, NAME = range(8)
+LAYERS = 8
 FAR = 1e6
-CORNER_XY = ((-1.0, -1.0), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0))
+S, W, E, N = range(4)
 
 
 @njit(cache=True)
@@ -75,9 +69,14 @@ def _neighbours(n, y, x):
     return k
 
 
+@njit(cache=True)
+def _zero(v):
+    return abs(v) < 0.5
+
+
 @njit(cache=True, parallel=True)
 def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
-    update, jitter, relax, tie, waves = k[0], k[1], k[3], k[4], k[5] > 0.5
+    update, jitter, tie = k[0], k[1], k[2]
     n = s.shape[1]
     for _ in range(ticks):
         s2[:, :, :] = s
@@ -93,102 +92,86 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                         if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
                             least = min(least, s[MIN, yy, xx])
                 s2[MIN, y, x] = least
-                if s[KEY, y, x] != least:                    # a new winner believed in: start again under it
-                    s2[KEY, y, x], s2[SIGN, y, x], s2[CORNER, y, x] = least, 0.0, 0.0
+                fresh = s[MIN, y, x] != least                # a new winner believed in: start again under it
+                zero = np.zeros(4)                          # which edges this cell is on (counts that are 0)
+                if not fresh:
                     for e in range(4):
-                        s2[D_S + e, y, x] = FAR
-                total_x = total_y = 0.0
-                seen = np.zeros(5)                          # signs seen on orthogonal edge or corner neighbours:
-                least_d = np.full(4, FAR)                   # +1, -1, +2, -2 (index 1..4); smallest counts (waves)
+                        zero[e] = 1.0 if _zero(s[D_S + e, y, x]) else 0.0
+                labelled = zero.sum()
+                near = np.full(4, FAR)                      # the smallest neighbour's count + 1, under the same winner
                 for dy in range(-1, 2):
                     for dx in range(-1, 2):
                         yy, xx = y + dy, x + dx
-                        if not ((dy or dx) and 0 <= yy < n and 0 <= xx < n):
+                        if not ((dy or dx) and 0 <= yy < n and 0 <= xx < n) or s[MIN, yy, xx] != least:
                             continue
-                        total_x += s[X, yy, xx]
-                        total_y += s[Y, yy, xx]
-                        if s[KEY, yy, xx] != least:         # made under another winner: not to be used
-                            continue
-                        for e in range(4):                  # whole-number counts, as in places.py
-                            least_d[e] = min(least_d[e], np.round(s[D_S + e, yy, xx]) + 1.0)
-                        if (dy == 0 or dx == 0) and kind[yy, xx] != 8:
-                            sg = s[SIGN, yy, xx]
-                            if sg == 1.0:
-                                seen[1] = 1.0
-                            elif sg == -1.0:
-                                seen[2] = 1.0
-                            elif sg == 2.0:
-                                seen[3] = 1.0
-                            elif sg == -2.0:
-                                seen[4] = 1.0
-                            # beside the origin: of its two edge neighbours (diagonal to each other), the one with the
-                            # smaller tag takes +1
-                            if (edge and s2[SIGN, y, x] == 0.0 and s[CORNER, yy, xx] == 1.0):
-                                for ey in range(-1, 2):
-                                    for ex in range(-1, 2):
-                                        oy, ox = y + ey, x + ex
-                                        if ey and ex and 0 <= oy < n and 0 <= ox < n and kind[oy, ox] == 5 \
-                                                and abs(oy - yy) + abs(ox - xx) == 1:
-                                            s2[SIGN, y, x] = 1.0 if tag[y, x] < tag[oy, ox] else -1.0
-                if edge and s2[SIGN, y, x] == 0.0:           # signs run along the edges: keep the first one got
-                    if seen[1] > 0.0:
-                        s2[SIGN, y, x] = 1.0
-                    elif seen[2] > 0.0:
-                        s2[SIGN, y, x] = -1.0
-                    elif seen[3] > 0.0:
-                        s2[SIGN, y, x] = 2.0
-                    elif seen[4] > 0.0:
-                        s2[SIGN, y, x] = -2.0
-                if corner:                                   # what this corner is
+                        for e in range(4):
+                            near[e] = min(near[e], np.round(s[D_S + e, yy, xx]) + 1.0)
+                        if not (edge or corner) or (dy and dx) or kind[yy, xx] == 8:
+                            continue                        # below: edge cells and corners, and their neighbours
+                                                            # along the edge
+                        if kind[yy, xx] == 5:               # an edge neighbour's zero runs on along the edge
+                            for e in range(4):
+                                if _zero(s[D_S + e, yy, xx]):
+                                    zero[e] = 1.0
+                        elif tag[yy, xx] == least:          # beside the origin: the smaller tag of its two edge
+                                                            # neighbours takes the south edge, the other the west
+                            for ey in range(-1, 2):
+                                for ex in range(-1, 2):
+                                    oy, ox = y + ey, x + ex
+                                    if ey and ex and 0 <= oy < n and 0 <= ox < n and kind[oy, ox] == 5 \
+                                            and abs(oy - yy) + abs(ox - xx) == 1:
+                                        zero[S if tag[y, x] < tag[oy, ox] else W] = 1.0
+                        elif labelled == 0.0:               # beside another corner, with no zero of my own yet:
+                            for e in range(4):              # take its zeros that my other edge neighbour lacks
+                                if _zero(s[D_S + e, yy, xx]):
+                                    lacks = True
+                                    for ey in range(-1, 2):
+                                        for ex in range(-1, 2):
+                                            oy, ox = y + ey, x + ex
+                                            if ey and ex and 0 <= oy < n and 0 <= ox < n and kind[oy, ox] == 5 \
+                                                    and abs(oy - yy) + abs(ox - xx) == 1 \
+                                                    and s[MIN, oy, ox] == least and _zero(s[D_S + e, oy, ox]):
+                                                lacks = False
+                                    if lacks:
+                                        zero[e] = 1.0
+                if corner:                                  # what this corner is
                     if least == tag[y, x]:
-                        s2[CORNER, y, x] = 1.0              # the origin (as far as it knows)
-                    elif seen[1] > 0.0:
-                        s2[CORNER, y, x], s2[SIGN, y, x] = 2.0, 2.0     # x = 1, y = 0: relays +2
-                    elif seen[2] > 0.0:
-                        s2[CORNER, y, x], s2[SIGN, y, x] = 3.0, -2.0    # x = 0, y = 1: relays -2
-                    elif seen[3] > 0.0 or seen[4] > 0.0:
-                        s2[CORNER, y, x] = 4.0              # x = y = 1
-                label = int(s2[CORNER, y, x])
-                if waves:
-                    # which edges this cell is on: south (+1), west (-1), east (+2), north (-2); corners are on two
-                    sg = s2[SIGN, y, x]
-                    on = (sg == 1.0 or label == 1 or label == 2, sg == -1.0 or label == 1 or label == 3,
-                          sg == 2.0 or label == 2 or label == 4, sg == -2.0 or label == 3 or label == 4)
-                    for e in range(4):                      # count in from each edge
-                        s2[D_S + e, y, x] = (0.0 if on[e] else least_d[e]) + jitter * np.random.standard_normal()
-                    ds, dw, de, dn = s2[D_S, y, x], s2[D_W, y, x], s2[D_E, y, x], s2[D_N, y, x]
-                    if dw + de < FAR / 2 and ds + dn < FAR / 2 and dw + de > 0.5 and ds + dn > 0.5:
-                        s2[X, y, x], s2[Y, y, x] = dw / (dw + de), ds / (ds + dn)    # fractions of the body
-                elif label > 0:                              # a labelled corner holds its coordinates
-                    s2[X, y, x], s2[Y, y, x] = CORNER_XY[label]
-                else:                                        # everyone else averages (over-relaxed by RELAX)
-                    m = kind[y, x]
-                    s2[X, y, x] = s[X, y, x] + relax * (total_x / m - s[X, y, x]) + jitter * np.random.standard_normal()
-                    s2[Y, y, x] = s[Y, y, x] + relax * (total_y / m - s[Y, y, x]) + jitter * np.random.standard_normal()
-                # naming: nearer a place's coordinates than any neighbour, once this cell knows its coordinates
+                        zero[S] = zero[W] = 1.0             # the origin
+                    elif zero[S] > 0:
+                        zero[E] = 1.0                       # (1, 0)
+                    elif zero[W] > 0:
+                        zero[N] = 1.0                       # (0, 1)
+                    elif zero[E] > 0 or zero[N] > 0:
+                        zero[E] = zero[N] = 1.0             # (1, 1)
+                for e in range(4):                          # count in from each edge
+                    s2[D_S + e, y, x] = (0.0 if zero[e] > 0 else near[e]) + jitter * np.random.standard_normal()
+                ds, dw = np.round(s2[D_S, y, x]), np.round(s2[D_W, y, x])
+                de, dn = np.round(s2[D_E, y, x]), np.round(s2[D_N, y, x])
+                if dw + de < FAR / 2 and ds + dn < FAR / 2 and dw + de > 0.5 and ds + dn > 0.5:
+                    s2[X, y, x], s2[Y, y, x] = dw / (dw + de), ds / (ds + dn)    # fractions of the body
+                # naming: once this cell knows its coordinates (its sums of opposite counts equal its neighbours'),
+                # nearer a place's coordinates than any neighbour (whose coordinates it works out from their counts)
+                across = np.round(s[D_W, y, x]) + np.round(s[D_E, y, x])
+                down = np.round(s[D_S, y, x]) + np.round(s[D_N, y, x])
+                knows = across < FAR / 2 and down < FAR / 2 and across > 0.5 and down > 0.5 and not fresh
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        yy, xx = y + dy, x + dx
+                        if knows and (dy or dx) and 0 <= yy < n and 0 <= xx < n:
+                            knows = (s[MIN, yy, xx] == least
+                                     and np.round(s[D_W, yy, xx]) + np.round(s[D_E, yy, xx]) == across
+                                     and np.round(s[D_S, yy, xx]) + np.round(s[D_N, yy, xx]) == down)
                 name = 0.0
-                # a cell knows its coordinates when its counts from opposite edges add up to the same as its
-                # neighbours' (in a finished frame the sums are the same everywhere: the width and the height)
-                knows = True
-                if waves:
-                    across = np.round(s[D_W, y, x]) + np.round(s[D_E, y, x])
-                    down = np.round(s[D_S, y, x]) + np.round(s[D_N, y, x])
-                    knows = across < FAR / 2 and down < FAR / 2
-                    for dy in range(-1, 2):
-                        for dx in range(-1, 2):
-                            yy, xx = y + dy, x + dx
-                            if knows and (dy or dx) and 0 <= yy < n and 0 <= xx < n:
-                                knows = (s[KEY, yy, xx] == least and s[KEY, y, x] == least
-                                         and np.round(s[D_W, yy, xx]) + np.round(s[D_E, yy, xx]) == across
-                                         and np.round(s[D_S, yy, xx]) + np.round(s[D_N, yy, xx]) == down)
                 for p in range(targets.shape[0] if knows else 0):
-                    mine = abs(s[X, y, x] - targets[p, 0]) + abs(s[Y, y, x] - targets[p, 1])
+                    mx, my = np.round(s[D_W, y, x]) / across, np.round(s[D_S, y, x]) / down
+                    mine = abs(mx - targets[p, 0]) + abs(my - targets[p, 1])
                     nearest = True
                     for dy in range(-1, 2):
                         for dx in range(-1, 2):
                             yy, xx = y + dy, x + dx
                             if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
-                                if abs(s[X, yy, xx] - targets[p, 0]) + abs(s[Y, yy, xx] - targets[p, 1]) < mine - tie:
+                                ox, oy = np.round(s[D_W, yy, xx]) / across, np.round(s[D_S, yy, xx]) / down
+                                if abs(ox - targets[p, 0]) + abs(oy - targets[p, 1]) < mine - tie:
                                     nearest = False
                     if nearest:
                         name = p + 1.0
@@ -196,44 +179,16 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
         s[:, :, :] = s2
 
 
-def warped(n: int = None):
-    """The coordinates averaging settles to, with only the corners held: x (columns) and y (rows, y = 0 at row 0),
-    solved directly. Used to give each named place its warped coordinates, as a rule's constants would be."""
-    import scipy.sparse as sp
-    import scipy.sparse.linalg as spl
-    n = n or SIZE
-    held = {(0, 0): (0, 0), (0, n - 1): (1, 0), (n - 1, 0): (0, 1), (n - 1, n - 1): (1, 1)}   # (row, col): (x, y)
-    a = sp.lil_matrix((n * n, n * n))
-    bx, by = np.zeros(n * n), np.zeros(n * n)
-    for r in range(n):
-        for c in range(n):
-            i = r * n + c
-            a[i, i] = 1.0
-            if (r, c) in held:
-                bx[i], by[i] = held[(r, c)]
-                continue
-            nb = [(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)
-                  if (dr or dc) and 0 <= r + dr < n and 0 <= c + dc < n]
-            for q in nb:
-                a[i, q[0] * n + q[1]] -= 1.0 / len(nb)
-    a = a.tocsr()
-    return spl.spsolve(a, bx).reshape(n, n), spl.spsolve(a, by).reshape(n, n)
-
-
 def ideal(n: int = None):
-    """The coordinates the rule should settle to: true fractions (waves), or the warped ones (averaging)."""
+    """The coordinates the rule should settle to, in frame coordinates (row = y, column = x): true fractions."""
     n = n or SIZE
-    if RULE == "waves":
-        cols = np.arange(n) / (n - 1)
-        return np.tile(cols, (n, 1)), np.tile(cols[:, None], (1, n))
-    if getattr(ideal, "cache", (None,))[0] != n:
-        ideal.cache = (n, warped(n))
-    return ideal.cache[1]
+    cols = np.arange(n) / (n - 1)
+    return np.tile(cols, (n, 1)), np.tile(cols[:, None], (1, n))
 
 
 def places(n: int = None):
-    """Each named place: its true cell in frame coordinates (row = y fraction, column = x fraction) and the
-    coordinates a cell there should hold."""
+    """Each named place: its true cell in frame coordinates (row = y fraction, column = x fraction) and its
+    coordinates."""
     n = n or SIZE
     wx, wy = ideal(n)
     out = {}
@@ -244,7 +199,7 @@ def places(n: int = None):
 
 
 def knobs():
-    return np.array([UPDATE, JITTER, 0.0, RELAX, TIE, 1.0 if RULE == "waves" else 0.0])
+    return np.array([UPDATE, JITTER, TIE])
 
 
 def life(seed: int = 0, dt: float = 1.0):
@@ -254,7 +209,7 @@ def life(seed: int = 0, dt: float = 1.0):
     s = np.zeros((LAYERS, n, n))
     s[MIN] = 2.0                                            # no corner tag heard yet
     s[D_S:D_N + 1] = FAR                                    # no edge heard from yet
-    s[X], s[Y] = rng.uniform(0, NOISE, (n, n)), rng.uniform(0, NOISE, (n, n))
+    s[X], s[Y] = rng.uniform(0, 0.1, (n, n)), rng.uniform(0, 0.1, (n, n))
     tag = rng.random((n, n))
     kind = np.array([[_neighbours(n, y, x) for x in range(n)] for y in range(n)])
     targets = np.array([w for _, w in places(n).values()])
@@ -268,18 +223,27 @@ def life(seed: int = 0, dt: float = 1.0):
         yield step * dt, s, tag
 
 
-def frame_of(s, tag):
-    """Which grid corner each labelled corner is, as a map from frame (row = y, col = x, in cells) to grid cells, or
-    None while the corners aren't all labelled."""
+def corners_of(s):
+    """Which grid corner is (0, 0), (1, 0), (0, 1) and (1, 1), by the zeros in its counts, or None while they aren't
+    all labelled consistently."""
     n = s.shape[1]
-    corners = [(0, 0), (0, n - 1), (n - 1, 0), (n - 1, n - 1)]
+    zero = lambda c, e: abs(s[D_S + e][c]) < 0.5
     label = {}
-    for c in corners:
-        code = int(s[CORNER][c])
-        if code > 0:
-            label[tuple(int(v) for v in CORNER_XY[code])] = c
-    if len(label) < 4:
+    for c in ((0, 0), (0, n - 1), (n - 1, 0), (n - 1, n - 1)):
+        on = tuple(e for e in range(4) if zero(c, e))
+        xy = {(S, W): (0, 0), (S, E): (1, 0), (W, N): (0, 1), (E, N): (1, 1)}.get(on)
+        if xy is None or xy in label:
+            return None
+        label[xy] = c
+    return label
+
+
+def frame_of(s, tag):
+    """A map from frame (row = y, col = x, in cells) to grid cells, or None while the corners aren't all labelled."""
+    label = corners_of(s)
+    if label is None:
         return None
+    n = s.shape[1]
     o, ex, ey = (np.array(label[k]) for k in ((0, 0), (1, 0), (0, 1)))
     ux, uy = (ex - o) / (n - 1), (ey - o) / (n - 1)          # grid steps per frame step along x and along y
     return lambda r, c: tuple(int(v) for v in np.round(o + ux * c + uy * r))
@@ -287,7 +251,7 @@ def frame_of(s, tag):
 
 def judge(s, tag):
     """(right, detail): right if the corners are all labelled consistently and every named place is claimed by
-    exactly its own cell; and the largest error in any cell's coordinates against the warped ideal."""
+    exactly its own cell; and the largest error in any cell's coordinates."""
     to_grid = frame_of(s, tag)
     if to_grid is None:
         return False, "corners not all labelled"
@@ -318,7 +282,7 @@ def run(seed=0, dt=1.0, time=20000.0, every=50.0):
 
 
 def picture(s, tag) -> np.ndarray:
-    """In greys: the warped coordinate grid as a checkerboard of bands (eighths of x and y), dim; named places white."""
+    """In greys: the coordinate grid as a checkerboard of bands (eighths of x and y), dim; named places white."""
     bands = (np.floor(8 * np.clip(s[X], 0, 0.999)) + np.floor(8 * np.clip(s[Y], 0, 0.999))) % 2
     shade = 0.15 + 0.25 * bands + 0.1 * s[X] * s[Y]
     return np.where(s[NAME] > 0, 1.0, shade)
@@ -332,10 +296,9 @@ def save_picture(pictures, path: str, scale: int = 4) -> None:
 
 
 def watch(seed: int = 0, dt: float = 1.0, scale: int = 0, title: str = "frame") -> None:
-    """A life, live: the warped coordinate grid as a checkerboard of bands (eighths of x and y), the corners lettered
-    with their coordinates, and the cells that name themselves white and lettered (N north middle, H NE halfway).
-    Keys: r restarts with a new seed; space pauses; up and down arrows change how many ticks pass per frame; Escape
-    quits."""
+    """A life, live: the coordinate grid as a checkerboard of bands (eighths of x and y), the corners lettered with
+    their coordinates, and the cells that name themselves white and lettered (N north middle, H NE halfway). Keys: r
+    restarts with a new seed; space pauses; up and down arrows change how many ticks pass per frame; Escape quits."""
     import pygame
     pygame.init()
     n = SIZE
@@ -375,11 +338,9 @@ def watch(seed: int = 0, dt: float = 1.0, scale: int = 0, title: str = "frame") 
         grey = (255 * picture(s, tag)).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
         screen.fill((0, 0, 0))
         screen.blit(pygame.surfarray.make_surface(np.stack([grey] * 3, axis=-1)), (0, 0))
-        for c in ((0, 0), (0, n - 1), (n - 1, 0), (n - 1, n - 1)):
-            xy = CORNER_XY[int(s[CORNER][c])]
-            if xy[0] >= 0:
-                label = font.render(f"{int(xy[0])}{int(xy[1])}", True, (255, 255, 255), (60, 60, 60))
-                screen.blit(label, (min(c[1] * scale, side - 18), min(c[0] * scale, side - 14)))
+        for xy, c in (corners_of(s) or {}).items():
+            label = font.render(f"{xy[0]}{xy[1]}", True, (255, 255, 255), (60, 60, 60))
+            screen.blit(label, (min(c[1] * scale, side - 18), min(c[0] * scale, side - 14)))
         for r, c in np.argwhere(s[NAME] > 0)[:20]:                  # (only a few letters: drawing is slow)
             screen.blit(font.render(names[int(s[NAME][r, c]) - 1], True, (0, 0, 0)), (c * scale + 2, r * scale))
         ok, detail = judge(s, tag)
@@ -397,13 +358,11 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--time", type=float, default=20000.0)
-    parser.add_argument("--rule", choices=("waves", "average"), default=RULE)
-    parser.add_argument("--relax", type=float, default=RELAX)
     parser.add_argument("--clean", action="store_true", help="no jitter")
     parser.add_argument("--picture", help="save the development as a PNG")
     parser.add_argument("--watch", action="store_true", help="watch it live instead")
     args = parser.parse_args()
-    SIZE, RELAX, RULE = args.size, args.relax, args.rule
+    SIZE = args.size
     if args.clean:
         JITTER = 0.0
     if args.watch:

@@ -61,22 +61,28 @@ def places(n: int) -> dict:
 
 
 class Brain:
-    """The sheet: two path channels, and the two input cells' balances and traces."""
+    """The sheet: two path channels, and the two input cells' balances and traces. The organs (where the inputs and
+    outputs are) are mounted at birth, or later (mount), once the sheet has named them; until then the channels have
+    no ends and nothing happens in them."""
 
-    def __init__(self, seed: int, dt: float):
+    def __init__(self, seed: int, dt: float, where: dict | None = None):
         paths.SIZE = SIZE
         paths.KICK_SENDS = False                    # pulses only when a sensor says
-        self.where = places(SIZE)
         self.dt = dt
-        self.sources = paths.masks((self.where["red"], self.where["blue"]))
         self.channels = [paths.born(seed + 101 * (i + 1)) for i in range(2)]
-        self.sinks = [paths.masks((self.where[o],)) for o in OUTPUTS]
         self.none = paths.masks(())
+        self.mount(places(SIZE) if where is None else where)
         self.rng = np.random.default_rng(seed + 7)
         self.balance = {c: INNATE + 0.02 * self.rng.standard_normal() for c in COLOURS}
         self.kicked = {c: -1e9 for c in COLOURS}    # when each input's sensor last kicked it
         self.got = [0.0, 0.0]
         self.t = 0.0
+
+    def mount(self, where: dict) -> None:
+        """The organs: cells for "red", "blue", "approach" and "avoid" (all four, or none)."""
+        self.where = where
+        self.sources = paths.masks(tuple(where[c] for c in COLOURS if c in where))
+        self.sinks = [paths.masks((where[o],) if o in where else ()) for o in OUTPUTS]
 
     def tick(self, kicks=()) -> list:
         """One tick: each kicked input cell sends a pulse one way or the other, by its balance. Returns how many
@@ -88,6 +94,8 @@ class Brain:
         for i, (s, s2, tag, k) in enumerate(self.channels):
             paths._ticks(s, s2, tag, self.sources, self.sinks[i], self.none, self.none, send[i], 1, self.dt, k)
         self.t += self.dt
+        if not self.where:
+            return [0.0, 0.0]
         got = [self.channels[i][0][paths.ARRIVED][self.where[o]] for i, o in enumerate(OUTPUTS)]
         new = [g - h for g, h in zip(got, self.got)]
         self.got = got

@@ -25,8 +25,10 @@ its own counts). In sequence, each step simple:
   4. Counts: every other count is the smallest neighbour's (with the same smallest tag) plus one: rows or columns in
      from that edge. Coordinates are fractions: x = from west / (from west + from east), y likewise.
   5. Naming a place: a cell knows its coordinates when its counts from opposite edges add up to the same as each
-     neighbour's (in a finished frame the sums are the same everywhere: the width and the height); it then takes a
-     name if its (x, y) is nearer the place's than any neighbour's.
+     neighbour's (in a finished frame those sums are the same everywhere: the width and the height); it then takes a
+     name if its (x, y) is nearer the place's than any neighbour's (on a tie, the one to the west, or south, wins). A
+     place is a fraction of the body, plus optionally an offset in cells: a cell is 1 / width across, which every
+     cell knows from its own counts, so "one cell east of the north middle" is exact at any size.
 Every cell updates at random times (each tick with chance UPDATE), and its counts get random jitter (JITTER; --clean
 turns it off).
 """
@@ -43,7 +45,8 @@ SIZE = 49
 UPDATE = 0.5        # the chance that a cell updates in a tick
 JITTER = 0.001      # random jitter in the counts at each update
 TIE = 1e-4          # how much nearer a neighbour must be to a place before a cell gives up its name
-PLACES = {"N": (0.5, 1.0), "H": (0.75, 0.75)}   # named places, as fractions of the body: north middle, NE halfway
+PLACES = {"N": (0.5, 1.0), "H": (0.75, 0.75)}   # named places, as fractions of the body: north middle, NE halfway;
+                                                # optionally also an offset in cells: (x, y, cells east, cells north)
 
 # Shared with neighbours: MIN (the smallest corner tag heard) and the counts in from each edge (D_S, D_W, D_E, D_N).
 # Kept to itself: X, Y (from its counts) and NAME (0 none, else the place's number).
@@ -163,16 +166,19 @@ def _ticks(s, s2, tag, kind, targets, ticks, dt, k):
                                      and np.round(s[D_S, yy, xx]) + np.round(s[D_N, yy, xx]) == down)
                 name = 0.0
                 for p in range(targets.shape[0] if knows else 0):
+                    tx = targets[p, 0] + targets[p, 2] / across     # the place: a fraction of the body, plus any
+                    ty = targets[p, 1] + targets[p, 3] / down       # offset in cells (a cell is 1 / width across)
                     mx, my = np.round(s[D_W, y, x]) / across, np.round(s[D_S, y, x]) / down
-                    mine = abs(mx - targets[p, 0]) + abs(my - targets[p, 1])
+                    mine = abs(mx - tx) + abs(my - ty)
                     nearest = True
                     for dy in range(-1, 2):
                         for dx in range(-1, 2):
                             yy, xx = y + dy, x + dx
                             if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
                                 ox, oy = np.round(s[D_W, yy, xx]) / across, np.round(s[D_S, yy, xx]) / down
-                                if abs(ox - targets[p, 0]) + abs(oy - targets[p, 1]) < mine - tie:
-                                    nearest = False
+                                theirs = abs(ox - tx) + abs(oy - ty)
+                                if theirs < mine - tie or (theirs <= mine + tie and (ox < mx or (ox == mx and oy < my))):
+                                    nearest = False         # nearer, or as near and to the west (or south)
                     if nearest:
                         name = p + 1.0
                 s2[NAME, y, x] = name
@@ -187,15 +193,19 @@ def ideal(n: int = None):
 
 
 def places(n: int = None):
-    """Each named place: its true cell in frame coordinates (row = y fraction, column = x fraction) and its
-    coordinates."""
+    """Each named place: the cell it should be, in frame coordinates (row = y, column = x), for judging."""
     n = n or SIZE
-    wx, wy = ideal(n)
     out = {}
-    for name, (fx, fy) in PLACES.items():
-        r, c = int(round(fy * (n - 1))), int(round(fx * (n - 1)))
-        out[name] = ((r, c), (wx[r, c], wy[r, c]))
+    for name, p in PLACES.items():
+        fx, fy, ox, oy = (tuple(p) + (0, 0))[:4]
+        nearest = lambda v: int(np.ceil(v - 0.5 - 1e-9))     # ties go west (or south), as in the cells
+        out[name] = (nearest(fy * (n - 1)) + oy, nearest(fx * (n - 1)) + ox)
     return out
+
+
+def targets_of():
+    """The places as the cells get them: fractions of the body, and offsets in cells (no size in them)."""
+    return np.array([(tuple(p) + (0, 0))[:4] for p in PLACES.values()], dtype=float)
 
 
 def knobs():
@@ -212,7 +222,7 @@ def life(seed: int = 0, dt: float = 1.0):
     s[X], s[Y] = rng.uniform(0, 0.1, (n, n)), rng.uniform(0, 0.1, (n, n))
     tag = rng.random((n, n))
     kind = np.array([[_neighbours(n, y, x) for x in range(n)] for y in range(n)])
-    targets = np.array([w for _, w in places(n).values()])
+    targets = targets_of()
     s2 = np.empty_like(s)
     k = knobs()
     _seed(seed)
@@ -258,7 +268,7 @@ def judge(s, tag):
     n = s.shape[1]
     wx, wy = ideal(n)
     ok = True
-    for i, (name, ((r, c), _)) in enumerate(places(n).items()):
+    for i, (name, (r, c)) in enumerate(places(n).items()):
         claimed = {tuple(int(v) for v in q) for q in np.argwhere(s[NAME] == i + 1)}
         ok = ok and claimed == {to_grid(r, c)}
     err = max(abs(s[X][to_grid(r, c)] - wx[r, c]) + abs(s[Y][to_grid(r, c)] - wy[r, c])

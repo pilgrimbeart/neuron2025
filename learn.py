@@ -84,13 +84,15 @@ class Brain:
         self.sources = paths.masks(tuple(where[c] for c in COLOURS if c in where))
         self.sinks = [paths.masks((where[o],) if o in where else ()) for o in OUTPUTS]
 
-    def tick(self, kicks=()) -> list:
-        """One tick: each kicked input cell sends a pulse one way or the other, by its balance. Returns how many
-        pulses reached each output in this tick."""
+    def tick(self, kicks=(), avoid=()) -> list:
+        """One tick: each kicked input cell sends a pulse one way or the other, by its balance; inputs kicked to avoid
+        (a disgust reflex) send theirs towards AVOID. Returns how many pulses reached each output in this tick."""
         send = [self.none.copy(), self.none.copy()]
         for c in kicks:
             self.kicked[c] = self.t
             send[0 if self.rng.random() < self.balance[c] else 1][self.where[c]] = True
+        for c in avoid:
+            send[1][self.where[c]] = True
         for i, (s, s2, tag, k) in enumerate(self.channels):
             paths._ticks(s, s2, tag, self.sources, self.sinks[i], self.none, self.none, send[i], 1, self.dt, k)
         self.t += self.dt

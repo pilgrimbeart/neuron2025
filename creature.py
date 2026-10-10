@@ -6,7 +6,8 @@ The brain is a square sheet of identical cells (each updating at random times), 
 between them: each starts when the one before has produced what it needs.
   1. Where am I (frame.py): the corners elect an origin, the edges are labelled, every cell comes to hold x and y
      (0 to 1), and cells name themselves organs by them: R at the middle of the north edge, A at the middle of the
-     south edge, V at north-east (0.8, 0.8); B is R's neighbour along the edge to the east.
+     south edge, V at north-east (0.8, 0.8), and B one cell east of R (each cell knows how wide a cell is, 1 / the
+     width, from its own counts), so R and B are always neighbours: a sensor organ.
   2. Wiring (paths.py): the body mounts its organs on the named cells (the head is wherever the sheet put north): R and
      B are the red and blue sensors' input cells, A and V the thrusters' output cells; two breadcrumb channels grow
      routes from R and B to A and to V.
@@ -18,7 +19,7 @@ the mouth will sweep (ahead, within its width, fading with distance); A at the t
 corner, pushes it back and turns it (a push off its centre line). The V cell also fires now and then by itself (a
 spontaneous tumble), so the creature searches: run and tumble. A block touched by the head end (the mouth) is eaten:
 its colour's sensor kicks once (the taste in the mouth), and a moment later the taste arrives at R and B, bad if it is
-poison. The body is gentle (TEMPO), as pulses take long to cross the brain. The world: a torus with blocks of both
+poison. A bad taste lingers a while (DISGUST), kicking R and B into the avoid route: the creature recoils. The body is gentle (TEMPO), as pulses take long to cross the brain. The world: a torus with blocks of both
 colours; an eaten block reappears elsewhere.
 """
 
@@ -35,10 +36,11 @@ import learn
 import paths
 
 SIZE = 49
-ORGANS = {"R": (0.5, 1.0), "A": (0.5, 0.0), "V": (0.8, 0.8)}   # where the sheet names its organs (x, y fractions)
+ORGANS = {"R": (0.5, 1.0), "B": (0.5, 1.0, 1, 0), "A": (0.5, 0.0), "V": (0.8, 0.8)}   # where the sheet names its
+                    # organs: x, y as fractions of the body (B: one cell east of R, so they are always neighbours)
 BODY = 4.0          # the body's side, in world units
 WORLD = 60.0        # the world's side (a torus)
-BLOCKS = 12         # blocks of each colour
+BLOCKS = 18         # blocks of each colour
 EAT = 1.0           # a block this near the front edge (the mouth: the whole head end) is eaten
 SENSE = 0.3         # sensor kicks per unit time at full strength
 REACH = 10.0        # how far a block's colour carries
@@ -47,6 +49,7 @@ V_BACK = 0.5        # V pushes back this much as hard as A pushes forward (it is
 TURN = 0.07         # V firing adds this much turning speed (radians per unit time)
 DRAG = 0.2          # speed and turning fade at this rate
 TUMBLE = 0.005      # the V cell fires by itself this often (per unit time)
+DISGUST = 40.0      # a bad taste lingers this long, kicking R and B into the avoid route: the creature recoils
 DELAY = 2.0         # from a meal to its taste (in the mouth: at once; waiting let the other colour's sensor take the blame)
 TEMPO = 0.7         # how strong and quick the body is (sensing, pushes, turns, tumbles): gentle, as pulses take long
                     # to cross the brain and several are in flight at once (a bigger brain needs a gentler body)
@@ -56,21 +59,13 @@ COLOURS = learn.COLOURS
 
 def organs_of(s) -> dict | None:
     """The cells that have named themselves organs, once each name is held by exactly one cell: {"R", "B", "A", "V"}
-    -> (row, column); B is R's neighbour on the same row of the frame (same y) with the larger x. None until then."""
+    -> (row, column). None until then."""
     out = {}
     for i, name in enumerate(ORGANS):
         cells = np.argwhere(s[frame.NAME] == i + 1)
         if len(cells) != 1:
             return None
         out[name] = tuple(int(v) for v in cells[0])
-    r, c = out["R"]
-    n = s.shape[1]
-    beside = [(r + dy, c + dx) for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0))
-              if 0 <= r + dy < n and 0 <= c + dx < n
-              and abs(s[frame.Y][r + dy, c + dx] - s[frame.Y][r, c]) < 1e-6 and s[frame.X][r + dy, c + dx] > s[frame.X][r, c]]
-    if not beside:
-        return None
-    out["B"] = beside[0]
     return out
 
 
@@ -150,6 +145,7 @@ def life(seed: int = 0, dt: float = 1.0, poison: str = "red"):
     grow = frame.life(seed)
     brain = learn.Brain(seed, dt, where={})
     organs, stage, meals, firings, tastes, flavour = None, "where am I", [], [], [], []
+    disgusted = -1e9                                            # when a bad taste last arrived
     while True:
         t, s, tag = next(grow)
         if organs is None:
@@ -162,7 +158,8 @@ def life(seed: int = 0, dt: float = 1.0, poison: str = "red"):
             for c in COLOURS:
                 if c not in kicks and rng.random() < TEMPO * SENSE * body.sees(c) * dt:
                     kicks.append(c)
-        got = brain.tick(kicks)
+        avoid = [c for c in COLOURS if rng.random() < TEMPO * SENSE * dt] if t - disgusted < DISGUST else []
+        got = brain.tick(kicks, avoid)
         fired = ["A"] * int(got[0]) + ["V"] * int(got[1])
         if organs is not None and rng.random() < TEMPO * TUMBLE * dt:
             fired.append("V")                                   # the V cell fires by itself: a tumble
@@ -178,6 +175,8 @@ def life(seed: int = 0, dt: float = 1.0, poison: str = "red"):
         for due, taste in [x for x in tastes if x[0] <= t]:
             tastes.remove((due, taste))
             brain.taste(taste)
+            if taste < 0:
+                disgusted = t
         yield t, s, brain, body, organs, stage, meals, firings
 
 
@@ -251,11 +250,14 @@ def watch(seed: int = 0, dt: float = 1.0, poison: str = "red") -> None:
             shade = np.where((p[paths.PATH] > 0.5) & (p[paths.FIRE_LEFT] > 0), 1.0, shade)
         grey = (255 * shade).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
         screen.blit(pygame.surfarray.make_surface(np.stack([grey] * 3, axis=-1)), (0, 0))
+        yuck = bool(meals) and meals[-1][1] == poison and t - meals[-1][0] < 60     # just ate poison
         if organs:
             labels = {"R": f"R {brain.balance['red']:.2f}", "B": f"B {brain.balance['blue']:.2f}", "A": "A", "V": "V"}
             for name, (r, c) in organs.items():
-                screen.blit(font.render(labels[name], True, (255, 255, 255), (60, 60, 60)),
-                            (c * scale - 4, r * scale + (14 if name == "B" else -4)))
+                lit = yuck and name == poison[0].upper()               # the poisoned colour's balance, falling
+                screen.blit(font.render(labels[name], True, (0, 0, 0) if lit else (255, 255, 255),
+                                        (255, 255, 255) if lit else (60, 60, 60)),
+                            (min(max(0, c * scale - 4), side - 60), min(max(0, r * scale - 4), side - 18) + (16 if name == "B" else 0)))
         # the world
         pygame.draw.rect(screen, (25, 25, 25), (side + 12, 0, wpx, wpx))
         for x, y, c in body.blocks:
@@ -267,7 +269,11 @@ def watch(seed: int = 0, dt: float = 1.0, poison: str = "red") -> None:
         r = np.array([f[1], -f[0]])                             # the body's right
         half = BODY / 2
         corners = [body.pos + half * (f + r), body.pos + half * (f - r), body.pos + half * (-f - r), body.pos + half * (-f + r)]
-        pygame.draw.polygon(screen, (160, 160, 160), [to_px(c) for c in corners], 2)
+        pygame.draw.polygon(screen, (255, 255, 255) if yuck else (160, 160, 160), [to_px(c) for c in corners],
+                            5 if yuck else 2)
+        if yuck:
+            px = to_px(body.pos)
+            screen.blit(font.render("yuck!", True, (0, 0, 0), (255, 255, 255)), (px[0] + 14, px[1] - 28))
         pygame.draw.circle(screen, (255, 255, 255), to_px(body.head()), 4)
         recent = {f_ for when, f_ in firings[-4:] if t - when < 6}
         if "A" in recent:

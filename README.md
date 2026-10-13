@@ -191,6 +191,8 @@ These are capability experiments ("can a uniform sheet do X?"), one at a time, e
 
 Each finished experimental setup is tagged in git (`exp/NAME`) and named in `LESSONS.md`, so it can be brought back exactly (`git checkout exp/NAME`, or `git worktree add ../NAME exp/NAME` to have it alongside). Setups still in use live side by side in the code, sharing `cell.py`.
 - `exp/robot-curriculum`: the robot curriculum (move, approach, graze, then discriminate) on the 24×24 disc, with the six-variable cubic cell and complexification.
+- `exp/paths-flow`: the earlier, slow flow rule for growing paths (canalisation).
+- `exp/coords-two-numbers`: coordinates from two shared numbers and neighbours' averages only: the brief's method (`coords.py`) and its robustness variants, the two-copy growth prototypes and the corner flags (`experiments/coords/`). Corner flags reach exact coordinates robustly to noise, but slowly.
 
 ## Requirements
 

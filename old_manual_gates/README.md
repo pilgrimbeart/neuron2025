@@ -1,6 +1,6 @@
 # neuron2025: the hand-designed system
 
-This is the earlier, hand-designed version of the project, superseded by the evolved cell rule (see `../README.md`). It still runs from this folder, using the project's `.venv`: `cd old_manual_gates && ../.venv/bin/python neuron.py`.
+This is the earlier, hand-designed version of the project, superseded first by an evolved cell rule and now by development in stages (see `../README.md`). It still runs from this folder, using the project's `.venv`: `cd old_manual_gates && ../.venv/bin/python neuron.py`.
 
 `neuron2025` is an interactive Python sandbox for building and probing a 2D field of excitable cells. You "wire" the medium by enabling cells on a grid, inject energy into those cells continuously, and then strike individual locations to watch pulses ignite, propagate, sustain, die out, and interact.
 

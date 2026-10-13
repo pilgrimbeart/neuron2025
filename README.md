@@ -1,13 +1,77 @@
 # Neuron 2025
 
-The aim is **emergent learning**: a sheet of identical cells, running one simple local rule, that learns within its own lifetime. The final test is a round robot, run by such a sheet, that bumbles round an arena of red and blue blocks and learns, within a run, which colour is food and which is poison.
+The aim is **emergent learning**: a sheet of identical cells, each running the same simple local rule, that builds itself into a working brain and then learns within its own lifetime. The test is a creature that bumbles round an arena of red and blue blocks and learns, from its own meals, which colour is food and which is poison.
 
-The cell rule is **evolved**. It was first designed by hand: an excitable medium with gates built from first principles and hand-made learning rules. That work still runs, in `old_manual_gates/`. Its rules learned routing, but not the robot task.
+**The approach now: development in stages.** Each capability ("can a uniform sheet do X?") is designed and proven on its own, by hand, with local rules only: knowing where you are, growing wiring, learning. Then they are composed, every cell switching from one stage to the next by local triggers ("this stage's work is done here"), never by a clock. The first creature built this way works: it lays down a coordinate frame, names its organs, grows its wiring, starts to move, and learns which colour is poison.
 
-**The picture we're aiming for:** a big sheet, a few sensors and actuators wired to its edges, and the sheet left to run. It grows its own sparse network, with most cells completely inactive, either by starting dense and pruning to paths (as slime mould does), or by growing paths through a quiet medium along gradients and then pruning them by use (as nervous systems do). When something new has to be learned, the growth and pruning can start again where needed.
+Earlier, the cell rule was **evolved** as one polynomial (in `cell.py`, below): it learned to move, approach and graze, but never which colour is food. Before that, the medium was **designed by hand** as an excitable medium with gates, which still runs in `old_manual_gates/`.
 
 - `LESSONS.md`: the principles, an index of capabilities, and what we've learned in each experiment, dead ends included.
 - `AGENTS.md`: how we work on the project.
+
+## Capability experiments
+
+Each has a live view (`--watch`) and a headless mode that measures it; all use random update times and noise.
+
+**Knowing where you are (`places.py`):** the four corners and the centre identify themselves by counting steps in from the edge (the centre is the highest count) and out from the centre (the corners are the highest), with whole-number counts to resist noise; or, more slowly, with one leaky chemical.
+
+```bash
+python places.py --watch                 # or --rule leak; K marks the cells that say they are corners, C the centre
+```
+
+**A body frame (`frame.py`):** every cell comes to hold x and y from 0 to 1, and places name themselves by them. The corners elect an origin (smallest random tag wins, with everything keyed to the believed winner, so nothing waits); the origin's two edge neighbours pick the axes by their tags; edges are labelled by zeros in four whole-number counts in from each edge; x = count from the west / (west + east), y likewise. Five shared numbers per cell; right at any size tried (25 to 512).
+
+```bash
+python frame.py --watch                  # r for a new seed (a new orientation)
+```
+
+**Coordinates from two numbers (`coords.py`, `experiments/coords/`):** the same job with the theoretical minimum, two shared numbers, seeing only neighbours' averages. The brief's method (diffuse, remember, then anchor) works without noise but fails at noise of 1e-10; corner flags (`experiments/coords/flags/`) are robust to noise of 1e-2 but slow. A finished side project (tag `exp/coords-two-numbers`).
+
+```bash
+python coords.py --watch --best --size 16
+```
+
+**Growing wiring (`paths.py`):** sinks send out waves that count their steps; each cell remembers which neighbour the wave came from (a breadcrumb); a path is the trail of breadcrumbs from a source. Pulses run along paths and sinks thank them, so a wired sheet falls silent and its paths stay; damage, moved or removed ends make it re-wire. Works at 48 to 384.
+
+```bash
+python paths.py --watch --sources "8,45 24,45 40,45" --sinks "12,2 36,2"   # s / k add an end at the mouse (or remove one), x damages, r restarts
+```
+
+**Development in stages (`develop.py`):** the frame is laid down, then three points appear (an equilateral triangle about the centre), then paths grow between them, with no timers between stages.
+
+```bash
+python develop.py --watch --size 97
+```
+
+**Learning which colour is poison (`learn.py`):** a red and a blue sensor wired by grown paths to an APPROACH and an AVOID output; each input cell sends its pulses towards approach with chance b, and a taste moves b by how far that input's recent-activity trace exceeds its neighbour's (three-factor learning, with the credit going to the more recently active input).
+
+```bash
+python learn.py --watch
+python learn.py --world line --watch     # continuous movement on a line, both colours in view
+```
+
+**A new-born creature (`creature.py`):** a square brain of identical cells finds where it is and names its organs (frame), grows wiring from its red and blue sensors to its two thrusters (paths), then moves (run and tumble: A at the tail drives it at what it sees, V at the front corner backs and turns it) and learns which colour is poison (the rule from `learn.py`), with a visible recoil after a bad taste. About two minutes live; with 18 blocks of each colour, poison is 17% of meals over the last two thirds of life (49% without learning).
+
+```bash
+python creature.py --watch                      # the whole story, live
+python creature.py --seed 1 --poison blue       # headless: when each stage began, meals in each third of life
+```
+
+## Next steps
+
+Roughly in the order we'd take them:
+1. **Changing its mind (reversal learning):** swap which colour is poison mid-life. Today a balance only falls after a bad taste, and a colour avoided is never tasted again; does the creature need curiosity (an occasional exploratory bite) to recover?
+2. **Damage and repair:** cut out a patch of the brain mid-life. The frame, the paths and the routes should regrow by local rules; does the creature re-wire, and does it keep what it learned (the memory lives in its two input cells)?
+3. **Wiring that scales:** today each target needs its own path channel, so every cell's variables grow with the number of targets (tens for something like C. elegans). Options (`LESSONS.md`, "Crossing"): lay the body out so most wiring is short and uncrossed; give cells a few slots that paths claim locally (variables set by wiring density, not by the number of targets); or one shared channel whose pulses carry a tag (their source, as SpiNNaker routes spikes, or their target's coordinates), with each cell's small routing memory written locally by the waves.
+4. **Steering, a second bit:** sensors on the left and right, so the creature must learn which way to turn, not only whether to approach: the first time its wiring, rather than two balances, would decide behaviour.
+5. **A creature that grows:** start the brain small and add cells through its life; every rule is meant to work at any size, so this is the real test of that.
+6. **Fewer numbers:** the creature shares 15 numbers per cell (5 for the frame, 5 per path channel); each stage's scaffolding could be reused by the next.
+7. **Evolve the developmental rule's few dozen constants** (flag sizes, thresholds, rates) rather than a general polynomial: a small search from a working start.
+8. **Open in the two-number frame,** if picked up again: collision recovery for the corner flags, extrapolated rise sizes, and sizes beyond 32.
+
+# The earlier approach: an evolved cell rule
+
+Kept and still runnable (tag `exp/robot-curriculum`); the findings are in `LESSONS.md`, part 2.
 
 ## The cell (`cell.py`)
 
@@ -97,7 +161,7 @@ The screen is in four quarters:
 
 Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` makes the red block poison), `seed N`, `dt X`, `restart`, `speed N`, `pause`, `resume`, `step N`, `view all|v|w|m|t|e|z`, `rule`, `quit`. Clicking a panel gives it the keyboard: with the cells panel focused (white outline), the space bar does `step 1`; click the console to type.
 
-## Where things stand
+## Where it stands
 
 **Achieved on the 12×12 sheet:**
 - move, approach and graze, at every tick size;
@@ -115,66 +179,7 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 - The curriculum carries one lineage: each stage hands one rule to the next, so learning can only build on one particular forager, chosen for eating, not for being teachable.
 - Most random rules don't move: their sheets go quiet within a few firings, so they taste nothing, however much food is near (`World.blocks`).
 
-## Next goal
-
-**Grow wiring across a bare sheet: one network joining every source and every sink.** No spikes, no robot, no meaning attached to the ends: the first step towards a sheet that grows its own wiring (`LESSONS.md`, "Growing wiring"). Not a path for every pair (12 inputs × 6 thrusters would be 72), but one shared network in which every source can reach every sink through junctions, where paths converge and diverge; later, learning lives at the junctions (how much of a signal goes down each branch), while the wiring itself is grown by development.
-
-`paths.py`, in two tricks: **sinks send out waves**, and **each cell remembers which neighbour the wave came from** (a breadcrumb). A source is on the path, and so is any cell a path cell's breadcrumb points to: a path is the trail of breadcrumbs from a source to the nearest sink. When the waves stop, cells forget, and the path vanishes. (Subtext: waves rest after passing, so they only go outwards; a breadcrumb is kept unless the wave now comes clearly shorter another way; ends are pulsed; cells update at random times; distances carry noise.)
-
-```bash
-python paths.py --watch --sources "8,45 24,45 40,45" --sinks "12,2 36,2"   # s / k add an end at the mouse (or remove one there), r restarts
-python paths.py --picture net.png --sources "8,45 24,45 40,45" --sinks "12,2 36,2"
-```
-
-**Done so far:**
-- **A first rule, by flow** (a chemical drained at the sink, conductance growing with flow; git tag `exp/paths-flow`): a single thin path, repaired locally when an end moves, but in about 600,000 ticks.
-- **Distances by the minimum of the neighbours** (in git history before the wave rule): fast, but stale values circulated after an end went ("count to infinity"), and every fix cost stability elsewhere.
-- **The wave rule (breadcrumbs):** every source joins its nearest sink in every test scene, seed and tick size, with noise and random update times; paths are as short as straight lines; when a sink moves, the path re-forms on the new shortest route; when sinks go, paths vanish. Works on 96×96 too.
-
-**Persistent, quiet wiring** (on by default): a sink calls only while hungry (no pulse has reached it lately), and a path lives as long as its sink thanks it (an acknowledgement passed back up the path for each pulse that arrives). Once wired, the sheet falls silent and the paths stay; damage, moved or removed ends make sinks hungry or sources lonely, and the network re-wires, then falls quiet again.
-
-**Crossing and learning (experiments in `LESSONS.md`, "Growing paths"):** crossed wiring for approach works with one set of variables per thruster (all 12 inputs of a robot-like ring reach their opposite thruster), or with no crossing at all if thrusters pull towards their own side (one channel). One bit was learned on a grown path: pulses along it, a trace at each input, and a bad taste closing the gate of a recently active input; the poison colour stopped reaching the thruster after its first visit, the other carried on.
-
-**Next:** quiet networks that stay in place once formed (plasticity: today a path exists only while waves keep coming); every source reaching every sink rather than only the nearest (a network with junctions); then carry pulses along the paths and put learning at the junctions.
-
-**Knowing where you are (`places.py`):** on a square sheet of identical cells, the four corners and the centre identify themselves by counting steps in from the edge (the centre is the highest count) and out from the centre (the corners are the highest), with whole-number counts to resist noise; or, more slowly, with one leaky chemical (highest at the centre, lowest at the corners).
-
-```bash
-python places.py --watch                 # or --rule leak; K marks the cells that say they are corners, C the centre
-```
-
-**A body frame (`frame.py`):** every cell comes to hold coordinates x and y from 0 to 1, and places name themselves by them (the north middle, the point halfway to the north-east corner). The corners elect an origin (smallest random tag wins), the origin chooses the axes (signs sent along the edges label all four), and each coordinate is a fraction: count in from the west edge / (counts from the west and east edges). The symmetry is broken by chance, fairly.
-
-```bash
-python frame.py --watch                  # r for a new seed (a new orientation); --rule average for the slow, warped version
-```
-
-**Development in stages (`develop.py`):** the frame is laid down, then three points appear (an equilateral triangle about the centre), then paths grow between them, all by local rules, with no timers between stages: each stage starts when the one before has produced what it needs.
-
-```bash
-python develop.py --watch --size 97
-```
-
-**Learning which colour is poison (`learn.py`):** a red and a blue sensor wired by grown paths to an APPROACH and an AVOID output; each input cell sends its pulses towards approach with chance b, and a taste moves b by rate × taste × that input's recent-activity trace (three-factor learning). Blocks of random colour, in random order: after one to three bad tastes the poison colour is avoided and food still eaten.
-
-```bash
-python learn.py --watch
-python learn.py --seed 1 --poison blue --blocks 30
-python learn.py --world line --watch     # continuous movement on a line, both colours in view
-```
-
-**A new-born creature (`creature.py`):** a square brain of identical cells assembles itself (finds where it is and names its organs, grows wiring from its two colour sensors to its two thrusters), then the creature starts to move, and learns, from its own meals, which colour is food. Run-and-tumble: A at the tail drives it forward at what it sees, V at the front corner backs and turns it.
-
-```bash
-python creature.py --watch                      # the whole story, live, in about two minutes
-python creature.py --seed 1 --poison blue       # headless: when each stage began, meals in each third of life
-```
-
-These are capability experiments ("can a uniform sheet do X?"), one at a time, each recorded in `LESSONS.md` (which also lists what the earlier hand-designed medium in `old_manual_gates/` showed: wires, diodes, logic, crossings, oscillators and inhibition from one simple excitable cell, and routing learned by reward); the plan is then to compose them: a body plan, paths between its parts, and learning on the paths.
-
-**Then, the search for colour learning resumes** with what this teaches, either as a cell family with grown wiring and its few knobs evolved, or with the random search below.
-
-**After that (some or all):**
+**If this approach is resumed (some or all):**
 1. **Search from random rules in a target-rich world, screening out the hopeless cheaply.** MAP-Elites on discriminate, all six variables free, with many blocks of each colour (`World.blocks`, e.g. 40), so any rule that keeps moving tastes often. In front of each full evaluation, a short life (about 500 time units, 2 worlds, dt 1): a candidate whose thrusters have stopped firing can't taste, so can't learn, and is rejected at about 1/200 of the cost. To build: the screen and `--blocks` for `mapelites.py`.
 2. **If movers don't learn, the dish** (an alternative, sketched): a bare 12×12 sheet with two inputs and an output laid out like one sensor group, visits to either input in random order each ending in a taste (good after one, bad after the other, swapped between lives), learning measured as the change in output response. About a tenth of a robot candidate's cost; learners would then be put in the robot.
 3. **Thin the world** once something learns: fewer blocks, step by step (a curriculum on the world rather than on behaviour).

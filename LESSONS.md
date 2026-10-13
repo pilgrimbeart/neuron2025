@@ -19,6 +19,8 @@ What we tried, what worked, what didn't and why, so settled questions aren't reo
 
 ## Capabilities at a glance
 
+The next steps are in the README ("Next steps").
+
 | Capability | Where | How, in a sentence | Status |
 |---|---|---|---|
 | Development in stages | `develop.py` | Frame, then three named points, then paths between them; each stage starts when the one before has produced its input, no timers. | Works at 49 and 129. |
@@ -26,10 +28,10 @@ What we tried, what worked, what didn't and why, so settled questions aren't reo
 | A body frame | `frame.py` | Corners elect an origin by smallest tag (work keyed to the believed winner), signs relayed round the edges label them, whole-number counts in from each edge give x and y as fractions; a cell names a place only when its counts are consistent with its neighbours'. | Works at 25–512. |
 | Knowing where you are | `places.py` | Count steps in from the edge (the centre is the highest), then out from the centre (the corners are the highest). | Works at 24–96. |
 | Growing paths | `paths.py` | Sinks send waves that count steps; each cell remembers which neighbour the wave came from; a path is the breadcrumb trail from a source; pulses and acknowledgements keep it, and the sheet falls silent. | Works at 48–384. |
-| Crossing paths | `~/neuron2025-parked/paths_experiments/cross/` | A breadcrumb channel per target (or change the body so the target is the nearest). | 100%; hub and addresses about 90%. |
+| Crossing paths | `experiments/paths/cross/` | A breadcrumb channel per target (or change the body so the target is the nearest). | 100%; hub and addresses about 90%. |
 | A new-born creature | `creature.py` | A square brain names its organs (frame), grows routes from its R and B sensors to its A and V thrusters (paths), then moves and learns which colour is food (learn.py's rule), all by local rules, no timers. | Works at 49 (about 2 minutes live): poison 7% of meals once learned; at 97 with a gentler body. |
 | Learning which colour is poison | `learn.py` | Each input cell sends its pulses towards APPROACH with chance b, else AVOID; a taste moves b by rate × taste × how far the input's trace exceeds its neighbour's (three factors: just active, a meal, the taste). | Works at 49 and 512, one block at a time, and with both colours in view (line world, 49). |
-| One-bit learning (first version) | `~/neuron2025-parked/paths_experiments/learn.py` | A gate at each input, closed by a bad taste while that input's trace of recent pulses is up. | Works on a bare sheet. |
+| One-bit learning (first version) | `experiments/paths/learn.py` | A gate at each input, closed by a bad taste while that input's trace of recent pulses is up. | Works on a bare sheet. |
 | Wiring drawn by hand | `old_manual_gates/` | An excitable medium on hand-drawn wiring: wires, diodes, AND/OR/XOR, crossings, oscillators; routing learned by reward. | Works; its own LESSONS. |
 | Evolved robot rule | `cell.py`, `evolve.py`, `mapelites.py` (tag `exp/robot-curriculum`) | A polynomial per cell variable, found by evolution through a curriculum. | Moves, approaches, grazes; colour learning never found. |
 
@@ -251,7 +253,7 @@ The earlier approach: one polynomial rule per cell variable, found by evolution 
 
 ## Designing a seed rule by hand (bare-sheet experiments)
 
-What uniform rule lets useful circuits form? Built step by step within the 4-variable quadratic cell on a bare 48×48 sheet (kept in `~/neuron2025-parked/seed_design/`):
+What uniform rule lets useful circuits form? Built step by step within the 4-variable quadratic cell on a bare 48×48 sheet (kept in `experiments/seed_design/`):
 - **Excitable cells:** v grows above a threshold and decays below it (quadratic, with the clamp at 1 as the upper limit), and recovery w ends spikes. Recovery must be shunting (−B·v·w), or v goes below zero and rebounds; coupling must be excitatory input only, or a lone active cell drains before lighting its neighbours.
 - **Canalisation by co-activity alone makes rings, not paths:** excitation moves as fronts, not flows, so there is no source-to-sink current to carve channels.
 - **Channels by anti-diffusion work:** a labyrinth of one-cell channels from noise; channels conduct, insulators are inert; a pulse covers exactly its connected network.

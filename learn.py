@@ -3,14 +3,18 @@ APPROACH and an AVOID output, and the sheet learns, from tastes in random order,
 
     python learn.py [--world choice|line] [--size N] [--seed N] [--dt X] [--blocks N] [--poison red|blue] [--watch]
 
-The sheet (Brain): two breadcrumb channels (paths.py), one per output. In each, both sensors are sources and the
-output the sink, so four routes grow (red and blue, to approach and to avoid); a channel per target, so they cross
-freely. The input cell (where the paths start, and where taste arrives, as in the robot) holds two numbers:
-  - its balance b: each pulse it sends goes towards APPROACH with chance b, else towards AVOID;
-  - its trace: 1 when its sensor last kicked it, fading with time (TRACE).
-and one rule: a taste changes b by RATE x taste x trace (bad tastes negative, scaled so b stays between 0 and 1).
-The three factors: pre (the trace: this input was just active), post (a meal: it happens only after approach, so the
-taste arriving is itself the sign that approach won), and the taste.
+The sheet (Brain): every cell holds the same layers, its own numbers: a learning layer and two breadcrumb channels
+(paths.py), one per output. In each channel both sensors' cells are sources and the output the sink, so four routes
+grow (red and blue, to approach and to avoid); a channel per target, so they cross freely. The learning layer holds:
+  - a balance b (born near INNATE): each pulse the cell sends goes towards APPROACH with chance b, else AVOID;
+  - a trace: 1 when a sensor last kicked the cell, fading with time (TRACE);
+  - news: the age of the freshest kick it has heard of (its own, or a neighbour's news plus HOP); a cell that hears
+    of a kick fresher than its own forgets its own, and its trace is gone. So of the two inputs only the more
+    recently kicked holds a trace (lateral inhibition, as news you can watch spread from one input to the other).
+and one rule: a taste delivered to the cell moves b by RATE x taste x its trace, bad tastes negative, scaled so b
+stays between 0 and 1. Every cell has it; only cells a sensor kicks and a taste reaches ever use it. The three
+factors: pre (the trace: this input was the last active), post (a meal: it happens only after approach, so the taste
+arriving is itself the sign that approach won), and the taste.
 
 Two worlds (the body and world, not the sheet):
   - choice: one block at a time, red or blue at random; while it is in view its colour's sensor kicks its input cell
@@ -30,6 +34,7 @@ import argparse
 import time
 
 import numpy as np
+from numba import njit, prange
 
 import paths
 
@@ -39,89 +44,173 @@ DECIDE = 3          # choice: pulses an output must receive first to win
 DELAY = 10.0        # from a meal to its taste (the body's)
 TRACE = 10.0        # how fast an input's trace fades (per unit time; must outlast DELAY, not the sheet)
 RATE = 1.0          # how far one taste moves the balance
-INNATE = 0.75       # the balance an input cell is born with (above 0.5: drawn to anything it sees)
+INNATE = 0.75       # the balance a cell is born with (above 0.5: drawn to anything it sees)
+NOISE = 0.02        # ... give or take this much (every cell its own)
+UPDATE = 0.5        # the chance that a cell updates in a tick
+HOP = 0.1           # news of a kick ages this much more per step it travels (so a cell's own echo is never fresher)
+SHOW = 12.0         # watching only: cells holding news younger than this are outlined
+DISGUST = 0.0       # a bad taste makes the cell send pulses towards AVOID for this long (0: no reflex)
+RECOIL = 0.0        # ... this often (per unit time)
 GAP = 50.0          # choice: mean time between one block's pulses arriving and the next block
 STEP = 1.0          # line: how far one pulse at an output moves the robot
 REACH = 8.0         # line: how far a block's colour carries
 LOST = 24.0         # line: a block further than this is gone
 SPAWN = 0.01        # line: new blocks per unit time (at most MOST in the world)
 MOST = 2
-CONTRAST = True     # a taste moves an input's balance by how far its trace exceeds its neighbours' (else by its trace)
 FLAVOUR = True      # line: a block being eaten kicks its colour's sensor (the food in the mouth, sensed strongly)
 COLOURS = ("red", "blue")
 OUTPUTS = ("approach", "avoid")
 
+# The learning layer: every cell's own numbers. Its balance, how long since a sensor kicked it (its trace is
+# exp(-that / TRACE); forgotten, it is infinite), a taste delivered to it and not yet taken, how long its disgust has
+# left, and the news: the age of the freshest kick it has heard of (the one number here its neighbours can read).
+BALANCE, KICKED, TASTE, DISGUST_LEFT, NEWS = range(5)
+LAYERS = 5
+NEVER = 1e9
+
+
+def knobs() -> np.ndarray:
+    return np.array([TRACE, RATE, UPDATE, HOP, DISGUST, RECOIL])
+
+
+@njit(cache=True, parallel=True)
+def _ticks(l, l2, kick, taste, send, dt, k):
+    """One tick of the learning layer. kick marks the cells a sensor kicked now, taste is what the body delivers to
+    each cell now (0 almost everywhere), send[0] and send[1] get the cells that send a pulse into the approach and
+    the avoid channel. Every cell, every tick: ages grow; a kick makes the cell's own kick and its news fresh (age 0)
+    and sends a pulse, towards approach with chance its balance; a disgusted cell sends towards avoid now and then.
+    Then each cell, with chance UPDATE: it takes its neighbours' freshest news (plus HOP), and if that is fresher than
+    its own kick, it forgets its own kick (of two inputs only the more recently kicked keeps a trace: lateral
+    inhibition); and it takes any taste waiting, moving its balance by RATE x taste x its trace, kept between 0 and 1;
+    a bad one disgusts it."""
+    trace, rate, update, hop, disgust, recoil = k[0], k[1], k[2], k[3], k[4], k[5]
+    n = l.shape[1]
+    for y in prange(n):
+        for x in range(n):
+            send[0, y, x] = send[1, y, x] = False
+            l[TASTE, y, x] += taste[y, x]
+            l[KICKED, y, x] = min(NEVER, l[KICKED, y, x] + dt)
+            l[NEWS, y, x] = min(NEVER, l[NEWS, y, x] + dt)
+            if kick[y, x]:
+                l[KICKED, y, x] = l[NEWS, y, x] = 0.0
+                send[0 if np.random.random() < l[BALANCE, y, x] else 1, y, x] = True
+            if l[DISGUST_LEFT, y, x] > 0.0:
+                l[DISGUST_LEFT, y, x] = max(0.0, l[DISGUST_LEFT, y, x] - dt)
+                if np.random.random() < recoil * dt:
+                    send[1, y, x] = True
+    l2[:, :, :] = l
+    for y in prange(n):
+        for x in range(n):
+            if np.random.random() >= update:
+                continue
+            news = l[NEWS, y, x]
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    yy, xx = y + dy, x + dx
+                    if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
+                        news = min(news, l[NEWS, yy, xx] + hop)
+            l2[NEWS, y, x] = news
+            if news < l[KICKED, y, x]:                      # someone was kicked after me: forget my kick
+                l2[KICKED, y, x] = NEVER
+            t = l[TASTE, y, x]
+            if t != 0.0:
+                b = l[BALANCE, y, x]
+                l2[BALANCE, y, x] = b + rate * t * np.exp(-l2[KICKED, y, x] / trace) * (b if t < 0.0 else 1.0 - b)
+                l2[TASTE, y, x] = 0.0
+                if t < 0.0:
+                    l2[DISGUST_LEFT, y, x] = disgust
+    l[:, :, :] = l2
+
 
 def places(n: int) -> dict:
-    """Where the sensors' input cells and the outputs are: the two inputs side by side by the west edge (a sensor
-    organ), outputs by the east, as fractions of the sheet."""
+    """The bench: where the sensors' input cells and the outputs are, the two inputs 6 cells apart by the west edge,
+    outputs by the east, as fractions of the sheet. (In the creature the sheet names these itself.)"""
     at = lambda fy, fx: (int(round(fy * (n - 1))), int(round(fx * (n - 1))))
     r, c = at(0.5, 0.1)
-    return {"red": (r, c), "blue": (r + 1, c), "approach": at(0.35, 0.9), "avoid": at(0.65, 0.9)}
+    return {"red": (r - 3, c), "blue": (r + 3, c), "approach": at(0.35, 0.9), "avoid": at(0.65, 0.9)}
 
 
 class Brain:
-    """The sheet: two path channels, and the two input cells' balances and traces. The organs (where the inputs and
-    outputs are) are mounted at birth, or later (mount), once the sheet has named them; until then the channels have
-    no ends and nothing happens in them."""
+    """The sheet: per cell, its learning layer and two path channels (approach, avoid), all its own numbers. Each tick
+    the world says, per cell, which are ends (sources, and each channel's sinks), which a sensor kicks and what taste
+    arrives; nothing else goes in, and the world reads only the pulses arriving at cells."""
 
-    def __init__(self, seed: int, dt: float, where: dict | None = None):
+    def __init__(self, seed: int, dt: float, tag: np.ndarray | None = None):
         paths.SIZE = SIZE
-        paths.KICK_SENDS = False                    # pulses only when a sensor says
+        paths.KICK_SENDS = False                    # pulses only when the learning layer sends them
         self.dt = dt
-        self.channels = [paths.born(seed + 101 * (i + 1)) for i in range(2)]
-        self.none = paths.masks(())
-        self.mount(places(SIZE) if where is None else where)
-        self.rng = np.random.default_rng(seed + 7)
-        self.balance = {c: INNATE + 0.02 * self.rng.standard_normal() for c in COLOURS}
-        self.kicked = {c: -1e9 for c in COLOURS}    # when each input's sensor last kicked it
-        self.got = [0.0, 0.0]
+        rng = np.random.default_rng(seed + 7)
+        self.tag = rng.random((SIZE, SIZE)) if tag is None else tag    # each cell's name, from birth
+        self.channels = []
+        for i in range(2):
+            s, s2, _, k = paths.born(seed + 101 * (i + 1))
+            self.channels.append((s, s2, k))
+        self.l = np.zeros((LAYERS, SIZE, SIZE))
+        self.l[BALANCE] = np.clip(INNATE + NOISE * rng.standard_normal((SIZE, SIZE)), 0.0, 1.0)
+        self.l[KICKED] = self.l[NEWS] = NEVER
+        self.l2 = np.empty_like(self.l)
+        self.k = knobs()
+        self.send = np.zeros((2, SIZE, SIZE), np.bool_)
+        self.none = np.zeros((SIZE, SIZE), np.bool_)
+        self.last = np.zeros((2, SIZE, SIZE))
         self.t = 0.0
 
-    def mount(self, where: dict) -> None:
-        """The organs: cells for "red", "blue", "approach" and "avoid" (all four, or none)."""
-        self.where = where
-        self.sources = paths.masks(tuple(where[c] for c in COLOURS if c in where))
-        self.sinks = [paths.masks((where[o],) if o in where else ()) for o in OUTPUTS]
-
-    def tick(self, kicks=(), avoid=()) -> list:
-        """One tick: each kicked input cell sends a pulse one way or the other, by its balance; inputs kicked to avoid
-        (a disgust reflex) send theirs towards AVOID. Returns how many pulses reached each output in this tick."""
-        send = [self.none.copy(), self.none.copy()]
-        for c in kicks:
-            self.kicked[c] = self.t
-            send[0 if self.rng.random() < self.balance[c] else 1][self.where[c]] = True
-        for c in avoid:
-            send[1][self.where[c]] = True
-        for i, (s, s2, tag, k) in enumerate(self.channels):
-            paths._ticks(s, s2, tag, self.sources, self.sinks[i], self.none, self.none, send[i], 1, self.dt, k)
+    def tick(self, sources, sinks, kick=None, taste=None) -> np.ndarray:
+        """One tick. sources: the cells that are sources in both channels; sinks: [approach's, avoid's]; kick: the
+        cells a sensor kicks; taste: what taste arrives at each cell. Returns, per channel and cell, the pulses that
+        arrived in this tick."""
+        _ticks(self.l, self.l2, self.none if kick is None else kick,
+               np.zeros((SIZE, SIZE)) if taste is None else taste, self.send, self.dt, self.k)
+        for i, (s, s2, k) in enumerate(self.channels):
+            paths._ticks(s, s2, self.tag, sources, sinks[i], self.none, self.none, self.send[i], 1, self.dt, k)
         self.t += self.dt
-        if not self.where:
-            return [0.0, 0.0]
-        got = [self.channels[i][0][paths.ARRIVED][self.where[o]] for i, o in enumerate(OUTPUTS)]
-        new = [g - h for g, h in zip(got, self.got)]
-        self.got = got
+        arrived = np.stack([s[paths.ARRIVED] for s, _, _ in self.channels])
+        new = arrived - self.last
+        self.last = arrived
         return new
 
+    def flying(self) -> bool:
+        return any((s[paths.FIRE_LEFT] > 0).any() for s, _, _ in self.channels)
+
+
+class Bench:
+    """The bench for learn.py's worlds: the brain with its ends placed by hand (places), kicked and tasted there."""
+
+    def __init__(self, seed: int, dt: float):
+        self.brain = Brain(seed, dt)
+        self.where = places(SIZE)
+        mask = lambda *names: paths.masks(tuple(self.where[c] for c in names))
+        self.sources = mask(*COLOURS)
+        self.sinks = [mask(o) for o in OUTPUTS]
+        self.cell = {c: mask(c) for c in COLOURS}
+        self.pending = np.zeros((SIZE, SIZE))
+
+    @property
+    def t(self):
+        return self.brain.t
+
+    @property
+    def balance(self) -> dict:
+        return {c: float(self.brain.l[BALANCE][self.where[c]]) for c in COLOURS}
+
+    def tick(self, kicks=()) -> list:
+        kick = paths.masks(tuple(self.where[c] for c in kicks))
+        taste, self.pending = self.pending, np.zeros((SIZE, SIZE))
+        new = self.brain.tick(self.sources, self.sinks, kick, taste)
+        return [float(new[i][self.where[o]]) for i, o in enumerate(OUTPUTS)]
+
     def taste(self, taste: float) -> None:
-        """A taste reaches both input cells: each moves its balance by RATE x taste x its trace (or, with CONTRAST,
-        by how far its trace exceeds its neighbour's: the inputs are side by side)."""
-        traces = {c: np.exp(-(self.t - self.kicked[c]) / TRACE) for c in COLOURS}
-        for c in COLOURS:
-            trace = traces[c]
-            if CONTRAST:
-                trace = max(0.0, trace - max(traces[o] for o in COLOURS if o != c))
-            b = self.balance[c]
-            self.balance[c] = b + RATE * taste * trace * (b if taste < 0 else 1.0 - b)
+        """A taste reaches both input cells."""
+        self.pending[self.sources] += taste
 
     def flying(self) -> bool:
-        return any((ch[0][paths.FIRE_LEFT] > 0).any() for ch in self.channels)
+        return self.brain.flying()
 
 
 def choice(seed: int = 0, dt: float = 1.0, poison: str = "red"):
     """The choice world, without end: yields (brain, the block in view or None, events) after every tick; an event
     is (colour, the output that won, the balance before, time)."""
-    brain, rng = Brain(seed, dt), np.random.default_rng(seed)
+    brain, rng = Bench(seed, dt), np.random.default_rng(seed)
     block, counts, tastes, events = None, [0, 0], [], []
     wait = rng.exponential(GAP)
     while True:
@@ -148,7 +237,7 @@ def choice(seed: int = 0, dt: float = 1.0, poison: str = "red"):
 def line(seed: int = 0, dt: float = 1.0, poison: str = "red"):
     """The line world, without end: yields (brain, the blocks [distance, colour], events) after every tick; an event
     is (colour, "eaten" or "lost", the balances before, time)."""
-    brain, rng = Brain(seed, dt), np.random.default_rng(seed)
+    brain, rng = Bench(seed, dt), np.random.default_rng(seed)
     blocks, tastes, events, flavour = [], [], [], []
     new = lambda: [rng.uniform(REACH / 2, 2 * REACH), COLOURS[rng.integers(2)]]
     while True:
@@ -247,9 +336,9 @@ def watch(world: str = "choice", seed: int = 0, dt: float = 1.0, poison: str = "
             done += 1
         shade = np.zeros((n, n))
         for i, level in ((1, 0.4), (0, 0.7)):
-            s = brain.channels[i][0]
+            s = brain.brain.channels[i][0]
             shade = np.where(s[paths.PATH] > 0.5, np.maximum(shade, level), shade)
-        for s, *_ in brain.channels:
+        for s, *_ in brain.brain.channels:
             shade = np.where((s[paths.PATH] > 0.5) & (s[paths.FIRE_LEFT] > 0), 1.0, shade)
         grey = (255 * shade).astype(np.uint8).T.repeat(scale, 0).repeat(scale, 1)
         screen.fill((0, 0, 0))

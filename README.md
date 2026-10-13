@@ -9,6 +9,12 @@ Earlier, the cell rule was **evolved** as one polynomial (in `cell.py`, below): 
 - `LESSONS.md`: the principles, an index of capabilities, and what we've learned in each experiment, dead ends included.
 - `AGENTS.md`: how we work on the project.
 
+## The demo (`demo/`): the current work
+
+Back to the golden rule we started with: each cell sees only the **mean** of each number its neighbours share. `demo/sheet.py` is the only code that knows the grid; a rule (`demo/rules/`) gets nothing but its own numbers, its neighbours' means and its neighbour count, so it can't break the rule by accident (`python test_rules.py` checks every rule and body). On it, the whole creature: organs that place themselves, wiring that grows, and learning, all from averages. Start there: `cd demo && python creature.py`; see `demo/README.md`. Held to one sheet size, 49, for now.
+
+An earlier demo, whose cells read each neighbour separately (so breaking the rule), is in `experiments/demo-individual-neighbours/`.
+
 ## Capability experiments
 
 Each has a live view (`--watch`) and a headless mode that measures it; all use random update times and noise.
@@ -43,14 +49,14 @@ python paths.py --watch --sources "8,45 24,45 40,45" --sinks "12,2 36,2"   # s /
 python develop.py --watch --size 97
 ```
 
-**Learning which colour is poison (`learn.py`):** a red and a blue sensor wired by grown paths to an APPROACH and an AVOID output; each input cell sends its pulses towards approach with chance b, and a taste moves b by how far that input's recent-activity trace exceeds its neighbour's (three-factor learning, with the credit going to the more recently active input).
+**Learning which colour is poison (`learn.py`):** a red and a blue sensor wired by grown paths to an APPROACH and an AVOID output; each input cell sends its pulses towards approach with chance b, and a taste moves b by that input's recent-activity trace, while news of each kick spreads and wipes older traces (three-factor learning, with the credit going to the more recently active input).
 
 ```bash
 python learn.py --watch
 python learn.py --world line --watch     # continuous movement on a line, both colours in view
 ```
 
-**A new-born creature (`creature.py`):** a square brain of identical cells finds where it is and names its organs (frame), grows wiring from its red and blue sensors to its two thrusters (paths), then moves (run and tumble: A at the tail drives it at what it sees, V at the front corner backs and turns it) and learns which colour is poison (the rule from `learn.py`), with a visible recoil after a bad taste. About two minutes live; with 18 blocks of each colour, poison is 17% of meals over the last two thirds of life (49% without learning).
+**A new-born creature (`creature.py`):** a square brain of identical cells finds where it is and names its organs (frame), grows wiring from its red and blue sensors to its two thrusters (paths), then moves (run and tumble: A at the tail drives it at what it sees, V at the front corner backs and turns it) and learns which colour is poison (the rule from `learn.py`, now a layer of every cell), with a visible recoil after a bad taste. R and B sit 6 cells apart, and news of each kick spreads between them. `python creature.py --check` confirms every cell is born the same, bar noise. About two minutes live; with 18 blocks of each colour, poison is 17% of meals over the last two thirds of life (49% without learning).
 
 ```bash
 python creature.py --watch                      # the whole story, live
@@ -197,6 +203,9 @@ Commands: `kernel NAME`, `task NAME`, `food red|blue` (in taste, `food blue` mak
 Each finished experimental setup is tagged in git (`exp/NAME`) and named in `LESSONS.md`, so it can be brought back exactly (`git checkout exp/NAME`, or `git worktree add ../NAME exp/NAME` to have it alongside). Setups still in use live side by side in the code, sharing `cell.py`.
 - `exp/robot-curriculum`: the robot curriculum (move, approach, graze, then discriminate) on the 24×24 disc, with the six-variable cubic cell and complexification.
 - `exp/paths-flow`: the earlier, slow flow rule for growing paths (canalisation).
+- `exp/creature-glued`: the first staged creature (`creature.py`) as it was when its learning still lived outside the cells (a Python dict per colour).
+- `exp/demo-individual-neighbours`: the first standalone demo (`experiments/demo-individual-neighbours/`), whose cells read each neighbour separately (breaking the averages rule); 16 lives: poison 43%, 27%, 24% of meals by thirds.
+- `exp/demo-averages-20`: the averages-only demo (`demo/`) with 20 shared numbers: poison 38%, 23%, 33% (no learning about 50%).
 - `exp/coords-two-numbers`: coordinates from two shared numbers and neighbours' averages only: the brief's method (`coords.py`) and its robustness variants, the two-copy growth prototypes and the corner flags (`experiments/coords/`). Corner flags reach exact coordinates robustly to noise, but slowly.
 
 ## Requirements

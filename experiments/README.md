@@ -11,3 +11,6 @@ modules (`paths.py`, `cell.py`) as they were at the time, so a prototype may nee
 - `seed_design/`: designing a seed rule for the evolved cell by hand on a bare 48×48 sheet (`seed.py`, `excite.py`,
   `channels.py`, `canal.py`), with the copies of `cell.py`, `robot.py`, `evolve.py`, `mapelites.py` and `app.py`
   it ran against.
+- `demo-individual-neighbours/`: the first standalone creature demo, whose cells read each neighbour separately
+  (breadcrumbs by tag, the smallest of each), so broke the averages rule; standalone (`python creature.py`). Rebuilt
+  under the rule in `demo/`.

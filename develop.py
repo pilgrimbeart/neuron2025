@@ -33,26 +33,25 @@ POINTS = {str(i + 1): (0.5 + R * np.cos(np.pi / 2 + 2 * np.pi * i / 3), 0.5 + R 
 
 
 def life(seed: int = 0):
-    """One life, without end: yields (time, the frame's numbers, the three channels' path maps, the named cells for
-    each point) after every tick."""
+    """One life, without end: yields (time, the frame's numbers, tag, the three channels' path maps, the cells named
+    each point (for watching only), the channels' numbers) after every tick. Each cell's path layers read its own
+    frame layer: in channel k it is a source when it has named itself point k, a sink when the next point."""
     frame.SIZE = paths.SIZE = SIZE
     frame.PLACES = POINTS
     body = frame.life(seed)
-    channels = [paths.life(seed + 17 * (k + 1), 1.0, paths.Ends(sources=(), sinks=())) for k in range(3)]
-    ends = [((), ()) for _ in range(3)]
+    t, s, tag = next(body)
+    channels = []
+    for k in range(3):
+        c, c2, _, knobs = paths.born(seed + 17 * (k + 1))
+        channels.append((c, c2, knobs))
+    none = paths.masks(())
     while True:
+        name = s[frame.NAME]
+        for k, (c, c2, knobs) in enumerate(channels):
+            paths._ticks(c, c2, tag, name == k + 1, name == (k + 1) % 3 + 1, none, none, none, 1, 1.0, knobs)
+        named = [tuple(tuple(int(v) for v in cell) for cell in np.argwhere(name == k + 1)) for k in range(3)]
+        yield t, s, tag, [c[paths.PATH] for c, _, _ in channels], named, channels
         t, s, tag = next(body)
-        named = [tuple(tuple(int(v) for v in c) for c in np.argwhere(s[frame.NAME] == k + 1)) for k in range(3)]
-        maps = []
-        for k, lives in enumerate(channels):
-            want = (named[k], named[(k + 1) % 3])           # channel k: point k to the next point
-            if want != ends[k]:
-                ends[k] = want
-                _, p, _ = lives.send(paths.Ends(sources=want[0], sinks=want[1]))
-            else:
-                _, p, _ = next(lives)
-            maps.append(p)
-        yield t, s, tag, maps, named, channels
 
 
 def run(seed: int = 0, time_: float = 3000.0):
@@ -68,7 +67,7 @@ def run(seed: int = 0, time_: float = 3000.0):
                 if marks[key] is None and paths.route(maps[k], named[k][0], named[(k + 1) % 3][0]) is not None:
                     marks[key] = t
         if t >= time_:
-            waves = np.mean([(ch.gi_frame.f_locals["s"][paths.EXCITED_LEFT] > 0).mean() for ch in channels])
+            waves = np.mean([(ch[0][paths.EXCITED_LEFT] > 0).mean() for ch in channels])
             joined = [paths.route(maps[k], named[k][0], named[(k + 1) % 3][0]) is not None
                       if named[k] and named[(k + 1) % 3] else False for k in range(3)]
             return marks, joined, waves

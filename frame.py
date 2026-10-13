@@ -212,16 +212,23 @@ def knobs():
     return np.array([UPDATE, JITTER, TIE])
 
 
-def life(seed: int = 0, dt: float = 1.0):
-    """One life, without end: yields (time, the cells' numbers, tag) after every tick."""
+def born(seed: int = 0):
+    """A new sheet: (the cells' numbers, each cell's tag). Every cell the same, bar noise in x and y; the tag is each
+    cell's name, random, nothing about position."""
     n = SIZE
     rng = np.random.default_rng(seed)
     s = np.zeros((LAYERS, n, n))
     s[MIN] = 2.0                                            # no corner tag heard yet
     s[D_S:D_N + 1] = FAR                                    # no edge heard from yet
     s[X], s[Y] = rng.uniform(0, 0.1, (n, n)), rng.uniform(0, 0.1, (n, n))
-    tag = rng.random((n, n))
-    kind = np.array([[_neighbours(n, y, x) for x in range(n)] for y in range(n)])
+    return s, rng.random((n, n))
+
+
+def life(seed: int = 0, dt: float = 1.0):
+    """One life, without end: yields (time, the cells' numbers, tag) after every tick."""
+    n = SIZE
+    s, tag = born(seed)
+    kind = np.array([[_neighbours(n, y, x) for x in range(n)] for y in range(n)])   # each cell's neighbours, counted
     targets = targets_of()
     s2 = np.empty_like(s)
     k = knobs()

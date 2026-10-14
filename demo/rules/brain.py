@@ -3,7 +3,8 @@ come first). Neighbours see only means.
 
   Choosing. When the body kicks R or B (its sensor saw that colour), that cell sends a pulse towards A (forward, at
   what it sees) with chance b, its balance; otherwise towards V (back off and turn). Born b = 0.9: a new-born
-  creature is drawn to anything it sees. V also fires now and then by itself: a tumble, so the creature searches.
+  creature is drawn to anything it sees. R and B also send towards V now and then by themselves: a tumble, so the
+  creature searches.
   The trace. A kicked cell keeps how many updates since its kick. Every cell keeps the news of each sensor: how old
   the freshest kick of R it has heard of is (R itself 0 when kicked; otherwise one more than the smaller of its own
   last news and its neighbours' smallest, from the mean of exp(-5 news)), and likewise of B. Without a new kick, no
@@ -28,7 +29,7 @@ NEWS_MAX = 120.0    # news older than this is no news (5 x 120 < 700, so exp(-5 
 N_BETA = 5.0
 DISGUST = 40.0      # how long a bad taste lasts (updates) ...
 RECOIL = 0.2        # ... sending a pulse towards V with this chance at each update
-TUMBLE = 0.02       # V fires by itself with this chance at each update
+TUMBLE = 0.01       # R and B each send towards V by themselves with this chance at each update: a tumble
 
 VARS = wiring.VARS + ("balance", "kicked", "disgust", "news_r", "news_b")
 SHARED = wiring.SHARED + (("news_r", N_BETA), ("news_b", N_BETA))
@@ -39,7 +40,6 @@ BIRTH_NOISE = wiring.BIRTH_NOISE
 BALANCE, KICKED, DISGUSTED, NEWS = range(len(wiring.VARS), len(wiring.VARS) + 4)     # NEWS + 0: of R, + 1: of B
 M_NEWS = len(wiring.SHARED)
 SEE, TASTE, LEARN = range(3)
-V_FIRED = wiring.BASE + 7 + wiring.FIRED
 
 
 @njit
@@ -72,8 +72,8 @@ def update(me, mean, count, inp, out):
             disgust = DISGUST
     if source and disgust > 0.0 and np.random.random() < RECOIL:
         send_v = True
+    if source and np.random.random() < TUMBLE:
+        send_v = True                                       # a tumble
     out[BALANCE], out[KICKED], out[DISGUSTED] = b, kicked, disgust
     wiring.stage(me, mean, count, out, 0, send_a)
     wiring.stage(me, mean, count, out, 1, send_v)
-    if name == wiring.SINKS[1] and np.random.random() < TUMBLE:
-        out[V_FIRED] += 1.0                                 # a tumble

@@ -25,7 +25,8 @@ not a clock, not its neighbours one by one.
 A rule may build on another by extending its VARS and SHARED (its numbers keep their places) and calling its update.
 
 The body touches the sheet only through cells(), give(), get() and take(): it finds cells by what they hold (a name they
-gave themselves), delivers inputs to them, and reads their numbers. Watching may use view().
+gave themselves), delivers inputs to them, and reads their numbers. Watching may use view(); the experimenter may
+damage() cells (replace them with new-born ones), as with the lizard.
 """
 
 from __future__ import annotations
@@ -45,26 +46,36 @@ def _seed(seed):
 @njit
 def _ticks(s, s2, mean, count, inp, shared, beta, update, ticks, p, noise):
     n = s.shape[0]
-    nv, ns = s.shape[2], shared.shape[0]
-    for _ in range(ticks):
-        for y in range(n):                                  # each cell's neighbours' means of the shared numbers
+    nv, ns, ni = s.shape[2], shared.shape[0], inp.shape[2]
+    me, out, avg, got = np.empty(nv), np.empty(nv), np.empty(mean.shape[2]), np.empty(ni)   # the rule's own arrays:
+    shown = np.empty((n, n, ns))                            # what each cell shows: a shared number, or exp(-beta x it)
+    for _ in range(ticks):                                  # (the rule never holds a view into the sheet)
+        for y in range(n):
             for x in range(n):
                 for k in range(ns):
                     v, b = shared[k], beta[k]
+                    shown[y, x, k] = s[y, x, v] if b == 0.0 else np.exp(-b * s[y, x, v])
+        for y in range(n):                                  # each cell's neighbours' means of what they show
+            for x in range(n):
+                for k in range(ns):
                     acc = 0.0
                     for dy in range(-1, 2):
                         for dx in range(-1, 2):
                             yy, xx = y + dy, x + dx
                             if (dy or dx) and 0 <= yy < n and 0 <= xx < n:
-                                acc += s[yy, xx, v] if b == 0.0 else np.exp(-b * s[yy, xx, v])
+                                acc += shown[yy, xx, k]
                     mean[y, x, k] = acc / count[y, x]
         for y in range(n):
             for x in range(n):
                 s2[y, x, :] = s[y, x, :]
                 if np.random.random() < p:                  # this cell updates now
-                    update(s[y, x], mean[y, x], count[y, x], inp[y, x], s2[y, x])
+                    me[:] = s[y, x]
+                    out[:] = s[y, x]
+                    avg[:] = mean[y, x]
+                    got[:] = inp[y, x]
+                    update(me, avg, count[y, x], got, out)
                     for v in range(nv):
-                        s2[y, x, v] += noise * np.random.standard_normal()
+                        s2[y, x, v] = out[v] + noise * np.random.standard_normal()
                     inp[y, x, :] = 0.0
         s[:, :, :] = s2
 
@@ -119,6 +130,15 @@ class Sheet:
         out = np.round(self._s[where, i])
         self._s[where, i] = 0.0
         return out
+
+    def damage(self, where: np.ndarray) -> None:
+        """The experimenter, not the body: these cells die and are replaced by new-born ones (birth values and noise)."""
+        rng = np.random.default_rng()
+        for name, i in self.index.items():
+            self._s[where, i] = self.rule.BIRTH[name]
+            if name in self.rule.BIRTH_NOISE:
+                self._s[where, i] += self.rule.BIRTH_NOISE[name] * rng.random(int(where.sum()))
+        self._inp[where] = 0.0
 
     def view(self, var: str) -> np.ndarray:
         """Watching only: a copy of one number over the whole sheet."""

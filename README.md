@@ -11,7 +11,7 @@ Earlier, the cell rule was **evolved** as one polynomial (in `cell.py`, below): 
 
 ## The demo (`demo/`): the current work
 
-Back to the golden rule we started with: each cell sees only the **mean** of each number its neighbours share. `demo/sheet.py` is the only code that knows the grid; a rule (`demo/rules/`) gets nothing but its own numbers, its neighbours' means and its neighbour count, so it can't break the rule by accident (`python test_rules.py` checks every rule and body). On it, the whole creature: organs that place themselves, wiring that grows, and learning, all from averages. Start there: `cd demo && python creature.py`; see `demo/README.md`. Held to one sheet size, 49, for now.
+Back to the golden rule we started with: each cell sees only the **mean** of each number its neighbours share. `demo/sheet.py` is the only code that knows the grid; a rule (`demo/rules/`) gets nothing but its own numbers, its neighbours' means and its neighbour count, so it can't break the rule by accident (`python test_rules.py` checks every rule and body). On it, the whole creature: coordinates and organs that place themselves, wiring that grows, and learning, all from averages, with 16 shared numbers (as many as the lizard's channels); damage it and it repairs itself. Start there: `cd demo && python creature.py`; see `demo/README.md`. Held to one sheet size, 49, for now.
 
 An earlier demo, whose cells read each neighbour separately (so breaking the rule), is in `experiments/demo-individual-neighbours/`.
 

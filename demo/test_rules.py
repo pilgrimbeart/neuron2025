@@ -3,12 +3,18 @@
   - it imports nothing that knows about the grid, the body or the world (only numpy, numba, math and other rules);
   - its update takes exactly (me, mean, count, inp, out): it is given nothing else;
   - every cell is born the same, bar the numbers declared random at birth;
-  - it runs on two very different sizes.
+  - it runs on two very different sizes, with every array index checked (a rule's arrays are copies of its own
+    numbers and its neighbours' means, so an index past their end can't reach another cell's numbers; the check
+    makes such an index fail here rather than read garbage).
 And that the body and world code (anything not in rules/ or sheet.py) touches the sheet only through cells(), give(),
 get(), take() and view().
 """
 
 from __future__ import annotations
+
+import os
+
+os.environ["NUMBA_BOUNDSCHECK"] = "1"   # every rule runs with its array indices checked: none can reach past its own
 
 import ast
 import importlib

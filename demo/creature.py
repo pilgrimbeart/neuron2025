@@ -2,17 +2,18 @@
 everything the brain's cells are and do is in rules/brain.py (on rules/wiring.py, on rules/organs.py), run by sheet.py,
 where each cell sees only its own numbers and the mean of each shared number over its neighbours.
 
-    python creature.py                  # watch a life (r: new life, space: pause, up/down: speed, Esc: quit)
+    python creature.py                  # watch a life (r: new life, d: damage the brain at the mouse, space: pause,
+                                        # up/down: speed, Esc: quit)
     python creature.py --measure 16     # 16 lives with learning and 16 without: how much poison it eats
     python test_rules.py                # every rule keeps the golden rules
 
 The body touches the brain only at cells by the names they took (R, B, A, V), cell by cell: it kicks the cell named
 R when its red sensor fires (B: blue), delivers tastes to R and B, and fires a thruster for each pulse arriving at a
-cell named A (or V). Nothing else goes in or out, and the body keeps nothing of the brain's.
+cell named A (the tail's edge) or V (one side's edge). Nothing else goes in or out, and the body keeps nothing of the brain's.
 
 The body: a square. R and B at the head see blocks of their colour in the corridor its mouth will sweep (fading with
-distance). A at the tail pushes it forward; V, halfway down one side, pushes it back and turns it (the cell named V also
-fires now and then by itself: a tumble, so it searches). A block the head moves forward into is eaten: its colour's sensor fires once
+distance). The tail (A) pushes it forward; a side (V) pushes it back and turns it (R and B also send to V
+now and then by themselves: a tumble, so it searches). A block the head moves forward into is eaten: its colour's sensor fires once
 (the flavour), the creature chews with its eyes shut, then the taste arrives, bad if it was poison. The world: a
 torus of red and blue blocks; an eaten block reappears elsewhere.
 """
@@ -41,6 +42,7 @@ V_BACK = 0.5        # V pushes back this much as hard as A pushes forward (it is
 TURN = 0.05         # V firing adds this much turning speed (radians per tick)
 DRAG = 0.2          # speed and turning fade at this rate
 CHEW = 17           # ticks from a meal to its taste, eyes shut (news of the flavour crosses from R to B meanwhile)
+DAMAGE = 7          # watching: the radius of the disc of cells d replaces with new-born ones
 BAND = 4            # watching: the faint checkerboard's squares, in cells
 NEWS_GLOW = 12      # watching: news younger than this glows
 COLOURS = ("red", "blue")
@@ -228,6 +230,12 @@ def watch(seed: int = 0) -> None:
                     seed += 1
                     poison = COLOURS[seed % 2]
                     life = Life(seed, poison)
+                elif event.key == pygame.K_d:                       # damage: new-born cells in a disc at the mouse
+                    mx, my = pygame.mouse.get_pos()
+                    if not (0 <= mx < side and 0 <= my < side):
+                        mx, my = side // 2, side // 2
+                    rows, cols = np.mgrid[0:SIZE, 0:SIZE]
+                    life.brain.damage((rows - my / scale) ** 2 + (cols - mx / scale) ** 2 < DAMAGE ** 2)
         if not paused:
             started = time.time()
             for i in range(per_frame):
@@ -249,14 +257,20 @@ def watch(seed: int = 0) -> None:
         screen.blit(pygame.surfarray.make_surface(rgb), (0, 0))
         yuck = life.t - life.yuck < 60
         names = np.round(view("name"))
-        for r, c in np.argwhere(names > 0):
-            text = letters[int(names[r, c])]
-            if text in ("R", "B"):
-                text += f" {view('balance')[r, c] / brain.STEPS:.2f}"
-            lit = yuck and text[0] == SENSOR[poison]
-            label = font.render(text, True, (0, 0, 0) if lit else (255, 255, 255), (255, 255, 255) if lit else (60, 60, 60))
-            above = r * scale - 20 if r * scale > 24 else r * scale + scale + 2      # beside the cell, not over it
-            screen.blit(label, (min(max(0, c * scale - 4), side - label.get_width()), above))
+        for k in np.unique(names[names > 0]):
+            cells = np.argwhere(names == k)
+            text = letters[int(k)]
+            if text in ("A", "V"):                                      # a whole edge: one label, in its middle
+                cells = cells[len(cells) // 2:len(cells) // 2 + 1]
+            for r, c in cells:
+                label_text = text + (f" {view('balance')[r, c] / brain.STEPS:.2f}" if text in ("R", "B") else "")
+                lit = yuck and text == SENSOR[poison]
+                label = font.render(label_text, True, (0, 0, 0) if lit else (255, 255, 255),
+                                    (255, 255, 255) if lit else (60, 60, 60))
+                w, h = label.get_size()                                 # beside the cell, inside the sheet
+                px = c * scale + scale + 3 if c == 0 else c * scale - w - 3 if c == SIZE - 1 else c * scale - w // 2
+                py = r * scale + scale + 3 if r == 0 else r * scale - h - 3 if r == SIZE - 1 else r * scale - h // 2
+                screen.blit(label, (min(max(0, px), side - w), min(max(0, py), side - h)))
         pygame.draw.rect(screen, (25, 25, 25), (side + 12, 0, wpx, wpx))
         body = life.body
         for x, y, c in body.blocks:
@@ -283,7 +297,7 @@ def watch(seed: int = 0) -> None:
         base = max(side, wpx)
         lines = (f"tick {life.t:6d}   stage: {stage}   poison: {poison}   eaten: red {eaten['red']}, blue {eaten['blue']}",
                  "recent meals: " + " ".join(m[0].upper() for _, m in life.meals[-14:]),
-                 f"{per_frame} ticks per frame   r new life   space pause   up/down speed   Esc quit")
+                 f"{per_frame} ticks per frame   r new life   d damage (at the mouse)   space pause   up/down   Esc")
         for i, line in enumerate(lines):
             screen.blit(font.render(line, True, (255, 255, 255)), (6, base + 6 + 22 * i))
         pygame.display.flip()

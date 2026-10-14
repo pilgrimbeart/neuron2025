@@ -13,4 +13,4 @@ modules (`paths.py`, `cell.py`) as they were at the time, so a prototype may nee
   it ran against.
 - `demo-individual-neighbours/`: the first standalone creature demo, whose cells read each neighbour separately
   (breadcrumbs by tag, the smallest of each), so broke the averages rule; standalone (`python creature.py`). Rebuilt
-  under the rule in `demo/`.
+  under the rule in `demo/`, now its own repository, nca-learn.

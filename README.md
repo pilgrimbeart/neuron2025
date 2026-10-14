@@ -8,10 +8,11 @@ Earlier, the cell rule was **evolved** as one polynomial (in `cell.py`, below): 
 
 - `LESSONS.md`: the principles, an index of capabilities, and what we've learned in each experiment, dead ends included.
 - `AGENTS.md`: how we work on the project.
+- `BRIEF.md`: the original brief the project started from.
 
-## The demo (`demo/`): the current work
+## The demo: now its own project, nca-learn
 
-Back to the golden rule we started with: each cell sees only the **mean** of each number its neighbours share. `demo/sheet.py` is the only code that knows the grid; a rule (`demo/rules/`) gets nothing but its own numbers, its neighbours' means and its neighbour count, so it can't break the rule by accident (`python test_rules.py` checks every rule and body). On it, the whole creature: coordinates and organs that place themselves, wiring that grows, and learning, all from averages, with 16 shared numbers (as many as the lizard's channels); damage it and it repairs itself. Start there: `cd demo && python creature.py`; see `demo/README.md`. Held to one sheet size, 49, for now.
+Back to the golden rule we started with: each cell sees only the **mean** of each number its neighbours share, enforced by the engine. On it, the whole creature: coordinates and organs that place themselves, wiring that grows, and learning, all from averages, with 18 shared numbers (the aim is the lizard's 16); damage it and it repairs itself. It was developed here in `demo/` and now lives in its own repository, [nca-learn](https://github.com/pilgrimbeart/nca-learn), with its own README and lessons. Its last version here is tag `exp/demo-averages-16`.
 
 An earlier demo, whose cells read each neighbour separately (so breaking the rule), is in `experiments/demo-individual-neighbours/`.
 
@@ -206,6 +207,7 @@ Each finished experimental setup is tagged in git (`exp/NAME`) and named in `LES
 - `exp/creature-glued`: the first staged creature (`creature.py`) as it was when its learning still lived outside the cells (a Python dict per colour).
 - `exp/demo-individual-neighbours`: the first standalone demo (`experiments/demo-individual-neighbours/`), whose cells read each neighbour separately (breaking the averages rule); 16 lives: poison 43%, 27%, 24% of meals by thirds.
 - `exp/demo-averages-20`: the averages-only demo (`demo/`) with 20 shared numbers: poison 38%, 23%, 33% (no learning about 50%).
+- `exp/demo-averages-16`: the averages-only demo (`demo/`) with 16 shared numbers, V at the tail corner, straight paths and damage, as it was when it moved to its own repository, nca-learn: poison 45%, 34%, 34% (no learning 51%, 50%, 47%). Its wiring took distances from the coordinates (A the whole tail edge) instead of from signals sent by A and V: magic knowledge, withdrawn in nca-learn.
 - `exp/coords-two-numbers`: coordinates from two shared numbers and neighbours' averages only: the brief's method (`coords.py`) and its robustness variants, the two-copy growth prototypes and the corner flags (`experiments/coords/`). Corner flags reach exact coordinates robustly to noise, but slowly.
 
 ## Requirements
